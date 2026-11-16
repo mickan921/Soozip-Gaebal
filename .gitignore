@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+offline-output/
+*.tar.gz
+*.tar.gz.sha256
+*.part
+
+*.7z
+*.7z.sha256
+.release-venv/

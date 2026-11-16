@@ -1,0 +1,4 @@
+# Development tools for the air-gapped Ubuntu workstation
+git cmake
+build-essential
+libssl-dev

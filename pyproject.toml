@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offline-apt-builder"
+version = "0.2.0"
+description = "Build and test local Ubuntu 24.04 APT repositories for one-way offline transfer"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+desktop = ["PySide6==6.10.1"]
+release = ["PySide6==6.10.1", "PyInstaller==6.17.0"]
+
+[project.scripts]
+offline-apt-builder = "offline_apt_builder.cli:main"
+offline-apt-online = "offline_apt_builder.desktop.app:online_main"
+offline-apt-offline = "offline_apt_builder.desktop.app:offline_main"
+offline-apt-worker = "offline_apt_builder.worker:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+offline_apt_builder = ["resources/*"]
