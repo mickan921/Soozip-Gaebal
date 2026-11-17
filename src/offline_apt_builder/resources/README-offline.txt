@@ -1,7 +1,7 @@
 OFFLINE APT INSTALLATION — UBUNTU 24.04 AMD64
 Build status: @STATUS@
 
-Open the .7z in the portable Offline APT Installer and review package changes.
+Open the .7z in the portable Gaebal app and review package changes.
 The .sha256 sidecar is optional; when present it must match.
 Transfer the archive inward through the approved process.
 Nothing needs to be exported from the air-gapped machine.

@@ -1,0 +1,1 @@
+"""Soozip desktop client."""

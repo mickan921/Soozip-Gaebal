@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+export PYTHONPATH="$root/src:$root/Soozip/src${PYTHONPATH:+:$PYTHONPATH}"
+python="$root/.venv/bin/python"
+[[ -x "$python" ]] || python=python3
+exec "$python" -m soozip "$@"

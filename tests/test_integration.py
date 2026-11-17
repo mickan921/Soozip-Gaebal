@@ -1,4 +1,4 @@
-"""Opt-in real Ubuntu/Docker tests. These are never represented by mocks."""
+"""Real opt-in Ubuntu/Docker tests and local shell-assertion regression checks."""
 
 import json
 import os
@@ -16,6 +16,36 @@ from offline_apt_builder.models import BuildError, BuildRequest
 ROOT = Path(__file__).resolve().parents[1]
 ENABLED = os.environ.get("OFFLINE_APT_INTEGRATION") == "1"
 ACCEPTANCE = os.environ.get("OFFLINE_APT_ACCEPTANCE") == "1"
+
+
+PACKAGE_ASSERTIONS = r"""
+assert_package_absent() {
+    local status
+    status=$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || true)
+    case "$status" in
+        ''|not-installed) ;;
+        *) printf 'Unexpected package state: %s %s\n' "$1" "$status" >&2; exit 92 ;;
+    esac
+}
+"""
+
+
+class ShellAssertionTests(unittest.TestCase):
+    def test_package_absence_checks_dpkg_status_not_query_exit_code(self):
+        # dpkg may know an uninstalled recommendation and still return zero.
+        for status, query_exit, expected in (
+            ('', 1, 0), ('not-installed', 0, 0), ('installed', 0, 92),
+            ('unpacked', 0, 92), ('half-configured', 0, 92), ('config-files', 0, 92),
+        ):
+            with self.subTest(status=status):
+                script = PACKAGE_ASSERTIONS + f"""set -eu
+dpkg-query() {{ printf '%s' '{status}'; return {query_exit}; }}
+assert_package_absent offline-test-tool
+printf continued
+"""
+                result = subprocess.run(['bash', '-c', script], text=True, capture_output=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(result.stdout, 'continued' if expected == 0 else '')
 
 
 def docker(*args, check=True):
@@ -44,7 +74,7 @@ class InstallerIntegrationTests(unittest.TestCase):
 
     def install(self, bundle="valid", flags="--yes --allow-upgrades", setup="", after="", expected=0):
         # All shell fragments below are fixed test code, not package/user input.
-        script = f"""set -eu
+        script = PACKAGE_ASSERTIONS + f"""set -eu
 {setup}
 set +e
 bash '/bundle with spaces #/install.sh' {flags}
@@ -60,9 +90,9 @@ set -e
         return result.stdout
 
     def test_unprivileged_preview_and_approved_install(self):
-        script = """set -eu
+        script = PACKAGE_ASSERTIONS + """set -eu
 su nobody -s /bin/bash -c "bash '/bundle with spaces #/install.sh' --preview" > /tmp/preview
-! dpkg-query -W offline-test-tool 2>/dev/null
+assert_package_absent offline-test-tool
 token=$(awk -F '\t' '$1 == "APPROVAL" {print $2}' /tmp/preview)
 test -n "$token"
 bash '/bundle with spaces #/install.sh' --yes --approval-token="$token"
@@ -73,12 +103,12 @@ bash '/bundle with spaces #/install.sh' --yes --approval-token="$token"
         self.assertEqual(result.returncode, 0, result.stdout)
 
     def test_changed_policy_invalidates_approval(self):
-        script = """set -eu
+        script = PACKAGE_ASSERTIONS + """set -eu
 bash /bundle/install.sh --preview > /tmp/preview
 token=$(awk -F '\t' '$1 == "APPROVAL" {print $2}' /tmp/preview)
 printf 'Package: offline-test-tool\nPin: version 2\nPin-Priority: 700\n' > /etc/apt/preferences.d/changed
 if bash /bundle/install.sh --yes --approval-token="$token"; then exit 91; fi
-! dpkg-query -W offline-test-tool 2>/dev/null
+assert_package_absent offline-test-tool
 """
         result = docker("run", "--rm", "--network", "none", "--volume",
                         f"{self.workspace / 'valid'}:/bundle:ro", self.base,
@@ -91,11 +121,11 @@ if bash /bundle/install.sh --yes --approval-token="$token"; then exit 91; fi
         self.assertIn("INSTALLED\toffline-test-tool\t2", output)
 
     def test_dry_run_installs_nothing(self):
-        self.install(flags="--dry-run", after="! dpkg-query -W offline-test-tool 2>/dev/null")
+        self.install(flags="--dry-run", after="assert_package_absent offline-test-tool")
 
     def test_recommendations_are_optional(self):
-        self.install(after="! dpkg-query -W offline-test-recommend 2>/dev/null")
-        self.install(bundle="recommended", after="dpkg-query -W offline-test-recommend")
+        self.install(after="assert_package_absent offline-test-recommend")
+        self.install(bundle="recommended", after="dpkg-query -W -f='${db:Status-Status}' offline-test-recommend | grep -qx installed")
 
     def test_virtual_selection_installs_concrete_provider(self):
         self.install(bundle="virtual", after="dpkg-query -W -f='${Provides}' offline-test-tool | grep -q offline-test-virtual")
@@ -121,7 +151,7 @@ find /etc/apt -type f -exec sha256sum {} + | sort > /tmp/before-config
         self.install(setup=setup)
 
     def test_downgrades_need_separate_approval(self):
-        setup = "dpkg -i /fixtures/pool/offline-test-pre_1_all.deb /fixtures/pool/offline-test-dep_1_all.deb /fixtures/pool/offline-test-tool_2_all.deb"
+        setup = "dpkg -i /fixtures/pool/offline-test-pre_1_all.deb /fixtures/pool/offline-test-dep_1_all.deb; dpkg -i /fixtures/pool/offline-test-tool_2_all.deb"
         output = self.install(bundle="old", flags="--yes", setup=setup, expected=1)
         self.assertIn("--allow-downgrades", output)
         self.install(bundle="old", flags="--yes --allow-downgrades", setup=setup)
@@ -143,7 +173,7 @@ find /etc/apt -type f -exec sha256sum {} + | sort > /tmp/before-config
     def test_corruption_stops_before_install(self):
         setup = "cp -a /fixtures/valid /tmp/corrupt; printf corrupt >> /tmp/corrupt/repo/offline-test-tool_2_all.deb"
         result = docker("run", "--rm", "--network", "none", "--volume", f"{self.workspace}:/fixtures:ro", self.base,
-                        "bash", "-c", setup + "; if bash /tmp/corrupt/install.sh --yes --allow-upgrades; then exit 91; fi; ! dpkg-query -W offline-test-tool 2>/dev/null", check=False)
+                        "bash", "-c", PACKAGE_ASSERTIONS + "set -eu; " + setup + "; if bash /tmp/corrupt/install.sh --yes --allow-upgrades; then exit 91; fi; assert_package_absent offline-test-tool", check=False)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("Checksum verification failed", result.stdout)
 
@@ -160,6 +190,39 @@ class AcceptanceTests(unittest.TestCase):
         cls.output = Path(os.environ.get("OFFLINE_APT_TEST_OUTPUT", "offline-output/acceptance")).resolve()
         cls.output.mkdir(parents=True, exist_ok=True)
 
+    def assert_empty_status_dependency_closure(self, bundle, manifest, archive_stem):
+        targets = [f"{s['name']}={s['version']}" for s in manifest["selections"]]
+
+        def resolve(omitted=""):
+            return docker(
+                "run", "--rm", "--pull", "never", "--network", "none",
+                "--volume", f"{bundle}:/bundle:ro", "--volume",
+                f"{ROOT / 'tests/fixtures/check_dependency_closure.sh'}:/check.sh:ro",
+                manifest["base_image"]["id"], "bash", "/check.sh",
+                str(manifest["with_recommends"]).lower(), omitted, *targets, check=False,
+            )
+
+        result = resolve()
+        (self.output / (archive_stem + ".empty-status.log")).write_text(result.stdout)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("EMPTY_STATUS_CLOSURE_OK", result.stdout)
+        if manifest["requested"] == ["jq"]:
+            # Explicitly cover dependencies of dependencies, including libraries
+            # already installed in the tooling and validation base images.
+            packages = {p["name"]: p for p in manifest["packages"]}
+            chain = ("jq", "libjq1", "libonig5", "libc6", "libgcc-s1")
+            for parent, dependency in zip(chain, chain[1:]):
+                self.assertIn(dependency, packages)
+                self.assertRegex(packages[parent]["depends"], rf"\b{dependency}\b")
+            # Removing libc6 from the local index must fail even though the
+            # container itself has libc6. This detects leaked installed state.
+            missing = resolve("libc6")
+            (self.output / (archive_stem + ".missing-libc6.log")).write_text(missing.stdout)
+            self.assertNotEqual(missing.returncode, 0, missing.stdout)
+            self.assertIn("libc6", missing.stdout)
+            self.assertIn("unmet dependencies", missing.stdout)
+            self.assertNotIn("EMPTY_STATUS_CLOSURE_OK", missing.stdout)
+
     def test_real_small_and_development_bundles(self):
         for packages in (("jq",), ("git", "cmake", "build-essential", "libssl-dev")):
             with self.subTest(packages=packages):
@@ -173,19 +236,24 @@ class AcceptanceTests(unittest.TestCase):
                     self.assertEqual(manifest["requested"], list(packages))
                     self.assertTrue(report["dependency_check"])
                     self.assertEqual(report["network_mode"], "none")
+                    self.assert_empty_status_dependency_closure(extracted, manifest, result.archive.stem)
                 docker("run", "--rm", "--network", "none", "ubuntu:24.04", "dpkg-query", "-W", "libc6")
 
     @unittest.skipUnless(os.environ.get("OFFLINE_APT_PORTABLE") == "1", "Build portable clients and set OFFLINE_APT_PORTABLE=1")
     def test_portable_worker_import_preview_install_without_runtime_dependencies(self):
-        client = ROOT / "dist/offline-apt-offline"
+        client = ROOT / "dist/Gaebal"
         self.assertTrue((client / "offline-apt-worker").is_file(), "Build portable clients first")
         result = build(BuildRequest(("jq",), self.output))
         # Use the actual reference base, which contains neither Python nor 7-Zip.
         image = json.loads(docker("image", "inspect", "--format", "{{json .}}", "ubuntu:24.04").stdout)
         script = r"""set -eu
-! command -v python3
-! command -v 7zz
-! command -v docker
+# Negation alone bypasses set -e, so unexpected runtimes must exit explicitly.
+for runtime in python3 python 7zz 7zzs 7z docker; do
+    if command -v "$runtime"; then
+        echo "Unexpected runtime in clean container: $runtime" >&2
+        exit 92
+    fi
+done
 mkdir -m 777 /work
 su nobody -s /bin/bash -c '/client/offline-apt-worker preview --request "{\"archive\":\"/input/bundle.7z\",\"workspace\":\"/work\"}"' > /tmp/preview.jsonl
 token=$(sed -n 's/.*"approval_token": "\([a-f0-9]*\)".*/\1/p' /tmp/preview.jsonl)

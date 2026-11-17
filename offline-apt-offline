@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -Eeuo pipefail
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-export PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}"
-python="$root/.venv/bin/python"
-[[ -x "$python" ]] || python=python3
-exec "$python" -c 'from offline_apt_builder.desktop.app import offline_main; raise SystemExit(offline_main())' "$@"

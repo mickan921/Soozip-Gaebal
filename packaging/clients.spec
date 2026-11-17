@@ -9,10 +9,14 @@ worker = Analysis([str(root / 'packaging/worker_entry.py')], pathex=[str(root / 
 worker_pyz = PYZ(worker.pure)
 worker_exe = EXE(worker_pyz, worker.scripts, [], exclude_binaries=True,
                  name='offline-apt-worker', console=True)
-for role in ('online', 'offline'):
-    app = Analysis([str(root / f'packaging/{role}_entry.py')], pathex=[str(root / 'src')],
+for name, module in (('Soozip', 'soozip'), ('Gaebal', 'gaebal')):
+    app = Analysis([str(root / name / 'main.py')],
+                   pathex=[str(root / 'src'), str(root / name / 'src')],
                    binaries=binaries, datas=data)
+    # No TIFF input is used. The wheel's optional TIFF plugin requires the
+    # libtiff.so.5 ABI, which Ubuntu 24.04 does not provide.
+    app.binaries = [entry for entry in app.binaries if not entry[0].endswith('/imageformats/libqtiff.so')]
     pyz = PYZ(app.pure)
-    exe = EXE(pyz, app.scripts, [], exclude_binaries=True, name=f'offline-apt-{role}', console=True)
+    exe = EXE(pyz, app.scripts, [], exclude_binaries=True, name=name, console=True)
     COLLECT(exe, worker_exe, app.binaries, app.datas, worker.binaries, worker.datas,
-            name=f'offline-apt-{role}')
+            name=name)

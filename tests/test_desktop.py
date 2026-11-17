@@ -6,7 +6,9 @@ from unittest.mock import patch
 try:
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
-    from offline_apt_builder.desktop.app import OnlineWindow, OfflineWindow, Worker
+    from offline_apt_builder.desktop.base import Worker
+    from soozip.app import SoozipWindow
+    from gaebal.app import GaebalWindow
 except ImportError:
     QApplication = None
 
@@ -18,7 +20,7 @@ class DesktopTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_online_validates_input_and_never_requests_skip_test(self):
-        window = OnlineWindow()
+        window = SoozipWindow()
         with patch.object(window.worker, 'launch') as launch:
             window.packages.setPlainText('git=1')
             window.build_bundle()
@@ -36,7 +38,7 @@ class DesktopTests(unittest.TestCase):
         window.close()
 
     def test_separate_version_approvals_and_install_lock(self):
-        window = OfflineWindow()
+        window = GaebalWindow()
         window.bundle = '/fixture'
         window.on_event({'type': 'plan', 'approval_token': 'a'*64, 'blockers': [], 'actions': [
             {'name': 'one', 'action': 'upgrade', 'old_version': '1', 'new_version': '2'},
