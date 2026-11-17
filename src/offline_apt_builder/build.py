@@ -70,6 +70,7 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
     containers = []
     tooling_image = f"offline-apt-builder-tooling:{build_id}"
     tooling_id = None
+    tooling_build_started = False
     published_paths = []
     resolver_started = False
     resolver_finished = False
@@ -88,7 +89,17 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
             if docker_os != "linux":
                 raise BuildError("Docker must provide a Linux container engine.")
         except BuildError as exc:
-            raise BuildError("Docker is unavailable. Start Docker Engine and check this user's Docker permissions; no automatic sudo is attempted.\n" + str(exc)) from exc
+            guidance = "Start Docker Engine and check this user's Docker permissions."
+            if "permission denied" in str(exc).lower() and "docker.sock" in str(exc):
+                guidance = (
+                    "This session cannot access the Docker socket. Run Soozip's install.sh to configure Docker access, "
+                    "or run these commands in your normal user's terminal:\n"
+                    'sudo groupadd --force docker\nsudo usermod -aG docker "$(id -un)"\n'
+                    "Then fully log out of Ubuntu and log back in, or reboot. Opening a new terminal alone is not enough. "
+                    "Verify docker info works without sudo before reopening Soozip. "
+                    "The docker group grants administrator-equivalent access."
+                )
+            raise BuildError("Docker is unavailable. " + guidance + " No automatic sudo is attempted.\n" + str(exc)) from exc
         work = Path(tempfile.mkdtemp(prefix="offline-apt-", dir="/tmp"))
         if request.keep_workdir:
             report["workdir"] = str(work)
@@ -118,6 +129,7 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
             raise BuildError("Ubuntu base has no immutable repository digest after pull.")
         base_ref = digests[0]
         report["base_image"] = {"id": base_image, "repo_digests": image.get("RepoDigests", [])}
+        tooling_build_started = True
         runner.run(["docker", "build", "--pull=false", "--platform", "linux/amd64",
                     "--build-arg", f"BASE_IMAGE={base_ref}", "--file", str(context / "Dockerfile.builder"),
                     "--tag", tooling_image, str(context)])
@@ -240,8 +252,9 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
                         runner.write(f"Cleanup could not remove {work}: {exc}\n")
             except OSError as exc:
                 runner.write(f"Cleanup could not remove {work}: {exc}. Remove this build workspace after stopping its containers.\n")
-        try:
-            runner.run(["docker", "image", "rm", tooling_image], check=False)
-        except BuildError:
-            pass
+        if tooling_build_started:
+            try:
+                runner.run(["docker", "image", "rm", tooling_image], check=False)
+            except BuildError:
+                pass
         runner.close()

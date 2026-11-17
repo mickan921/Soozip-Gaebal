@@ -27,7 +27,7 @@ class ClientInstallerTests(unittest.TestCase):
         # These are forbidden for an ordinary app installation, including Gaebal.
         for name in ('curl', 'wget', 'sudo', 'apt-get', 'pip', 'pip3'):
             self.command(name, f'printf "{name}\\n" >> "{self.calls}"; exit 97')
-        self.command('docker', 'exit 1')
+        self.command('docker', 'printf "linux\\n"')
         self.command('pkexec', 'exit 98')
 
     def command(self, name, body):
@@ -135,18 +135,42 @@ class ClientInstallerTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output([str(self.prefix / 'bin/gaebal'), 'still works'], text=True), 'still works\n')
         self.assertFalse(list((self.prefix / 'share').glob('.gaebal-stage.*')))
 
-    def test_docker_setup_is_opt_in_and_for_soozip_only(self):
+    def test_docker_setup_is_default_and_for_soozip_only(self):
         gaebal = self.payload('Gaebal')
         self.run_installer(gaebal, '--setup-docker', success=False)
+        self.run_installer(gaebal, '--skip-docker-setup', success=False)
         self.assertFalse(self.calls.exists())
         soozip = self.payload('Soozip')
         self.run_installer(soozip)
+        self.assertFalse(self.calls.exists())
+        self.command('docker', 'echo "permission denied connecting to /var/run/docker.sock" >&2; exit 1')
+        self.run_installer(soozip, success=False)
+        self.assertEqual(self.calls.read_text(), 'sudo\n')
+        self.calls.unlink()
+        skipped = self.run_installer(soozip, '--skip-docker-setup')
+        self.assertIn('Docker setup was skipped', skipped.stdout)
         self.assertFalse(self.calls.exists())
         self.run_installer(soozip, '--setup-docker', success=False)
         self.assertEqual(self.calls.read_text(), 'sudo\n')
         self.calls.unlink()
         self.command('docker', 'printf "linux\\n"')
         self.run_installer(soozip, '--setup-docker')
+        self.assertFalse(self.calls.exists())
+
+    def test_docker_setup_requires_fresh_desktop_session_before_launch(self):
+        soozip = self.payload('Soozip')
+        self.command('docker', 'exit 1')
+        # Successful setup cannot change an already-running installer's groups.
+        self.command('sudo', f'printf "%s\\n" "$@" > "{self.calls}"')
+        result = self.run_installer(soozip)
+        self.assertEqual(self.calls.read_text().splitlines(),
+                         ['/bin/bash', str(soozip / '_internal/setup-docker.sh'),
+                          subprocess.check_output(['id', '-un'], text=True).strip()])
+        self.assertIn('fully log out of Ubuntu', result.stdout)
+        self.assertIn('docker info without sudo', result.stdout)
+        self.assertNotIn('Open Soozip from the application menu.', result.stdout)
+        self.calls.unlink()
+        self.run_installer(soozip, '--uninstall')
         self.assertFalse(self.calls.exists())
 
     def test_interrupted_publication_restores_previous_app(self):

@@ -54,7 +54,7 @@ Keep each extracted application folder intact, including `_internal/` and
    cd "$HOME/Downloads"
    sha256sum -c Soozip-ubuntu24.04-amd64.tar.gz.sha256
    tar -xzf Soozip-ubuntu24.04-amd64.tar.gz
-   bash Soozip/install.sh --setup-docker
+   bash Soozip/install.sh
    ```
 
    Continue only if the archive checksum reports `OK`. The installer checks
@@ -63,13 +63,20 @@ Keep each extracted application folder intact, including `_internal/` and
    `~/.local/bin/soozip`. It replaces older installations made by this script
    without mixing runtime files.
 
-   `--setup-docker` is optional: omit it if you manage Docker yourself. If Docker
-   is already accessible, the option makes no Docker changes. Otherwise it asks
+   The installer checks Docker access by default. If Docker is already
+   accessible, it makes no Docker changes. Otherwise it asks
    for sudo authentication, installs Docker Engine from its official repository
    when needed, enables the service, and adds your account to the `docker` group.
-   This group grants administrator-equivalent access. Log out and back in after
-   group changes. Existing conflicting runtimes or custom Docker repositories
+   This group grants administrator-equivalent access. **Fully log out of Ubuntu
+   and log back in, or reboot, after group changes.** Opening another terminal
+   alone does not refresh the desktop session's group permissions. Verify
+   `docker info` works without sudo before opening Soozip.
+   Existing conflicting runtimes or custom Docker repositories
    are reported for manual review; the script does not remove them.
+
+   If you manage Docker yourself, use `bash Soozip/install.sh --skip-docker-setup`.
+   The existing `--setup-docker` option is still accepted. Gaebal's installer
+   never configures Docker or uses the network.
 
    Docker setup follows [Docker's Ubuntu installation instructions](https://docs.docker.com/engine/install/ubuntu/)
    and [non-root access guidance](https://docs.docker.com/engine/install/linux-postinstall/).
@@ -80,7 +87,7 @@ Keep each extracted application folder intact, including `_internal/` and
    ```
 
    The app itself always runs as your normal user. Do not run `install.sh` or
-   the GUI with sudo; the installer elevates only its optional Docker setup.
+   the GUI with sudo; the installer elevates only Docker setup when needed.
 3. Enter package names, for example `git cmake build-essential libssl-dev`, or
    use **Import Package List…** to select a text file. Use names only, without
    version selectors such as `git=...`. Text files allow whitespace-separated
@@ -236,7 +243,7 @@ Gaebal/
 ├── main.py                # Portable application entry point
 └── src/gaebal/            # Offline installer UI
 src/offline_apt_builder/   # Shared package engine and GUI worker/base controls
-packaging/                # Shared app installer, optional Docker setup, build config
+packaging/                # Shared app installer, Docker setup, build config
 scripts/build_clients.py  # Build both portable clients
 dist/Soozip/              # Complete portable Soozip application
 dist/Gaebal/              # Complete portable Gaebal application
@@ -296,6 +303,25 @@ docker run --rm --platform linux/amd64 ubuntu:24.04 cat /etc/os-release
 ```
 
 Follow [Docker's Linux post-installation instructions](https://docs.docker.com/engine/install/linux-postinstall/) if user access is unavailable. Docker access grants powerful host privileges. The builder does not invoke `sudo` or change Docker permissions automatically.
+
+For `permission denied` at `unix:///var/run/docker.sock`, run these commands
+from your normal user's terminal on the online machine:
+
+```bash
+sudo groupadd --force docker
+sudo usermod -aG docker "$(id -un)"
+```
+
+Fully log out of Ubuntu and log back in, or reboot, then run `docker info`
+without sudo. Desktop apps keep their original group permissions until the
+login session is refreshed. The portable Soozip installer performs this group
+setup automatically when Docker access is unavailable.
+
+Soozip uses `http://kr.archive.ubuntu.com/ubuntu/` for Ubuntu `noble` and
+`noble-updates` packages, and `http://security.ubuntu.com/ubuntu/` for
+`noble-security`. These sources are used in its Docker tooling and package
+resolver; the host machine's APT sources are not modified. Ubuntu archive
+signatures are verified before downloads.
 
 Install the CLI in a virtual environment on the online workstation:
 
@@ -458,6 +484,28 @@ caused by changing target package state before installation.
 
 ### Validation status for this release
 
+Version 0.4.1 makes Soozip's Docker setup the default (with
+`--skip-docker-setup` available), selects the Korean Ubuntu archive mirror,
+and fixes a Gaebal exit-141 failure after reading local package lists. The
+policy reader now consumes all APT output before returning a priority, so
+large policy output cannot terminate `apt-cache` with SIGPIPE. Unexpected
+shell failures also report their stage and line number.
+
+All 64 tests passed across the 0.4.1 local, Docker integration, and acceptance
+runs, including the exit-141 regression. Real Korean-mirror builds of `jq`
+(6 packages) and the development tools (121 packages) passed offline
+installation and dependency-closure checks. The rebuilt Gaebal worker also
+passed import, preview, and installation in a network-disabled container
+without separately installed Python, 7-Zip, or Docker commands.
+
+**Rebuild package bundles with Soozip 0.4.1 and transfer the matching Gaebal
+0.4.1 client.** The fix changes the installer embedded in each bundle; updating
+Gaebal alone does not update old bundles. Installer bytes must match the client
+and the bundle's checksum and validation evidence. Do not edit an existing
+bundle's `install.sh` or checksums to work around this failure.
+
+The following acceptance results describe the earlier 0.4.0 baseline:
+
 On Ubuntu 24.04 amd64, the core/Qt tests, real Docker installer fixtures, real
 package builds (`jq`: 6 packages; development tools: 121 packages), empty-status
 recursive dependency checks, and portable worker installation without separate
@@ -483,6 +531,8 @@ these results are not a guarantee for every customized destination image.
 | Target state changed after preview | Reopen the bundle, review the current package plan, and retry |
 | Unsupported builder | Use an Ubuntu 24.04 amd64 workstation; help/unit tests can run on macOS |
 | Docker unavailable | Check installation, daemon state, current user access, and the active local Docker context |
+| Docker socket permission denied | Rerun Soozip's installer to configure Docker access, fully log out and back in or reboot, then verify `docker info` without sudo before opening Soozip |
+| Gaebal exit 141 after reading local package lists | Rebuild the bundle with Soozip 0.4.1 and use matching Gaebal 0.4.1; the old installer could close its APT policy pipe early. This is separate from checksum corruption |
 | Package unavailable/ambiguous | Check the exact Ubuntu package name or specify a concrete provider; third-party repositories are not supported |
 | Network or mirror failure | Check online connectivity/proxy configuration and rebuild; partial results are not published |
 | Insufficient disk | Free space in `/tmp`, Docker storage, and the output filesystem, then rebuild |

@@ -245,12 +245,17 @@ class CliAndBuildTests(unittest.TestCase):
     def test_docker_failure_preserves_diagnostics_without_archive(self):
         with tempfile.TemporaryDirectory() as temp:
             request = BuildRequest(("jq",), Path(temp))
-            with patch("offline_apt_builder.build.check_host"), patch.object(Runner, "run", side_effect=BuildError("permission denied")):
+            with patch("offline_apt_builder.build.check_host"), patch.object(
+                    Runner, "run", side_effect=BuildError(
+                        "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock")) as run:
                 with self.assertRaises(BuildError) as caught: build(request)
+            run.assert_called_once_with(["docker", "info", "--format", "{{.OSType}}"], capture=True)
             self.assertIsNotNone(caught.exception.report)
             report = json.loads(caught.exception.report.read_text())
             self.assertEqual(report["status"], "FAILED")
             self.assertIn("Docker is unavailable", report["error"])
+            self.assertIn('sudo usermod -aG docker "$(id -un)"', report["error"])
+            self.assertIn("fully log out", report["error"])
             self.assertFalse(list(Path(temp).glob("*.7z")))
 
     def test_complete_engine_statuses_and_cleanup_with_simulated_docker(self):

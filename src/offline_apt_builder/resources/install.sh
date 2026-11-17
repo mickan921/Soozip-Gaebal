@@ -45,6 +45,13 @@ if [[ "${_OFFLINE_APT_LOGGED:-}" != 1 ]] && ((preview == 0)); then
 fi
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
+stage=preflight
+installer_error() {
+  local code="$1" line="$2"
+  printf 'ERROR: Installer command failed (exit %s, stage: %s, line: %s).\n' "$code" "$stage" "$line" >&2
+  exit "$code"
+}
+trap 'installer_error "$?" "$LINENO"' ERR
 for command in apt-get apt-cache apt-mark dpkg dpkg-query sha256sum awk grep tee mktemp; do
   command -v "$command" >/dev/null || fail "Required Ubuntu tool missing: $command"
 done
@@ -60,6 +67,7 @@ for file in "${required[@]}"; do
   # Every operational input must itself be covered by checksum verification.
   awk -v path="./$file" '$2 == path && NF == 2 && length($1) == 64 { found++ } END { exit(found != 1) }' "$root/SHA256SUMS" || fail "Checksum entry missing or duplicated for $file"
 done
+stage=checksums
 echo '[1/4] Verifying bundle checksums...'
 (cd -- "$root" && sha256sum --strict --check --quiet SHA256SUMS) || fail 'Checksum verification failed; transfer a fresh verified archive.'
 [[ "$(cat "$root/architecture.txt")" == amd64 && "$(dpkg --print-architecture)" == amd64 ]] || fail 'Requires an amd64 bundle and amd64 target.'
@@ -71,6 +79,7 @@ for target in "${targets[@]}"; do
   [[ "$target" =~ ^[a-z0-9][a-z0-9+.-]+=[a-zA-Z0-9.+:~_-]+$ ]] || fail "Invalid resolved installation target: $target"
 done
 
+stage=repository-setup
 tmp="$(mktemp -d /tmp/offline-apt-state.XXXXXX)"
 trap 'rm -rf -- "$tmp"' EXIT
 trap 'exit 130' INT
@@ -108,11 +117,15 @@ export APT_CONFIG="$tmp/apt.conf"
 echo 'Integrity: verified SHA-256 checksums; the local repository uses trusted=yes.'
 echo '[2/4] Loading the local-only APT repository...'
 apt-get update
+stage=policy
 check_policy() {
   local name="$1" version="$2" priority
+  # Consume all policy output: exiting awk on a match can SIGPIPE apt-cache
+  # and abort the installer with exit 141 under pipefail on larger systems.
   priority="$(apt-cache policy "$name" | awk -v version="$version" '
-    $1 == version && NF == 2 { print $2; exit }
-    $1 == "***" && $2 == version { print $3; exit }')"
+    !found && $1 == version && NF == 2 { priority=$2; found=1 }
+    !found && $1 == "***" && $2 == version { priority=$3; found=1 }
+    END { if (found) print priority }')"
   [[ "$priority" =~ ^-?[0-9]+$ ]] || fail "Cannot determine target APT policy for $name=$version."
   ((priority > 0)) || fail "Target APT pinning forbids $name=$version (priority $priority)."
 }
@@ -131,6 +144,7 @@ state_fingerprint() {
     apt-mark showhold | sort
   } | sha256sum | awk '{print $1}'
 }
+stage=preview
 state_before="$(state_fingerprint)"
 apt-mark showhold | sed 's/:.*//' > "$tmp/holds"
 echo '[3/4] Planned changes:'
@@ -145,7 +159,9 @@ awk '$1 == "Inst" { ver=$0; sub(/^[^(]*\(/,"",ver); sub(/ .*/,"",ver); print $2 
 while IFS=$'\t' read -r name new; do
   [[ -n "$name" ]] || continue
   [[ "$new" =~ ^[a-zA-Z0-9.+:~_-]+$ ]] || fail 'Cannot parse APT simulation; refusing installation.'
+  stage=policy
   check_policy "$name" "$new"
+  stage=preview
   current="$(dpkg-query -W -f='${db:Status-Status}\t${Version}' "$name" 2>/dev/null || true)"
   old=''
   if [[ "$current" == installed$'\t'* ]]; then old="${current#*$'\t'}"; fi
@@ -199,6 +215,7 @@ if ((assume_yes == 0)); then approve 'Install the displayed package transaction?
 options=(--assume-yes --no-remove)
 if ((allow_downgrades)); then options+=(--allow-downgrades); fi
 if ((assume_yes)); then export DEBIAN_FRONTEND=noninteractive; fi
+stage=install
 echo '[4/4] Installing and checking dependency consistency...'
 apt-get "${options[@]}" install "${targets[@]}"
 apt-get check

@@ -1,0 +1,78 @@
+"""Run the shipped shell installer with isolated APT command fixtures."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+from test_transport import valid_bundle
+
+
+SUPPORTED = (Path('/etc/os-release').is_file()
+             and 'VERSION_ID="24.04"' in Path('/etc/os-release').read_text()
+             and 'ID=ubuntu\n' in Path('/etc/os-release').read_text())
+
+
+@unittest.skipUnless(SUPPORTED, 'Requires Ubuntu 24.04 shell tools')
+class ShellInstallerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='installer-pipeline-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bundle = self.root / 'bundle with spaces #'
+        valid_bundle(self.bundle)
+        self.bin = self.root / 'commands'
+        self.bin.mkdir()
+        self.env = {**os.environ, 'PATH': str(self.bin) + ':' + os.environ['PATH']}
+        self.command('apt-get', 'printf "APT fixture completed\\n"')
+        self.command('apt-mark', 'exit 0')
+
+    def command(self, name, body):
+        path = self.bin / name
+        path.write_text('#!/bin/bash\n' + body + '\n')
+        path.chmod(0o755)
+
+    def run_preview(self):
+        return subprocess.run(['bash', str(self.bundle / 'install.sh'), '--preview'],
+                              env=self.env, text=True, capture_output=True, timeout=30)
+
+    def test_large_policy_output_is_drained_without_sigpipe(self):
+        for row in ('     1 500', ' *** 1 500'):
+            with self.subTest(row=row):
+                # The producer must write much more than a pipe buffer after the
+                # match. Early awk exit used to kill it with SIGPIPE (exit 141).
+                self.command('apt-cache', f'''printf '%s\\n' '{row}'
+for ((i=0; i<20000; i++)); do printf '        500 file:/fixture ./ Packages\\n'; done
+printf '     1 -1\\n'
+''')
+                result = self.run_preview()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('APPROVAL\t', result.stdout)
+
+    def test_missing_or_forbidden_policy_still_stops_preview(self):
+        for row, message in (('     2 500', 'Cannot determine target APT policy'),
+                             (' *** 1 -1', 'pinning forbids')):
+            with self.subTest(row=row):
+                self.command('apt-cache', f"printf '%s\\n' '{row}'")
+                result = self.run_preview()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn('APPROVAL\t', result.stdout)
+
+    def test_policy_command_failure_is_not_hidden(self):
+        self.command('apt-cache', "printf '     1 500\\n'; exit 42")
+        result = self.run_preview()
+        self.assertEqual(result.returncode, 42, result.stdout + result.stderr)
+        self.assertIn('stage: policy', result.stderr)
+        self.assertNotIn('APPROVAL\t', result.stdout)
+
+    def test_checksum_corruption_still_stops_before_apt(self):
+        (self.bundle / 'packages.txt').write_text('changed\n')
+        result = self.run_preview()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Checksum verification failed', result.stderr)
+        self.assertNotIn('APT fixture completed', result.stdout)
+
+
+if __name__ == '__main__':
+    unittest.main()

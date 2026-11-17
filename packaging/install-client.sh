@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared by the portable clients' install.sh entry points. No network by default.
+# Shared installer. Soozip prepares Docker; Gaebal needs no network.
 set -Eeuo pipefail
 app_name=$1
 app_command=$2
@@ -9,22 +9,25 @@ fail() { printf 'Installation error: %s\n' "$*" >&2; exit 1; }
 case "$app_name:$app_command" in Soozip:soozip|Gaebal:gaebal) ;; *) fail 'Unknown client.' ;; esac
 install_prefix="$HOME/.local"
 remove_client=0
-setup_docker=0
+docker_setup=no
+[[ $app_name != Soozip ]] || docker_setup=auto
 while (($#)); do
     case "$1" in
         --prefix) (($# >= 2)) || fail '--prefix needs a directory.'; install_prefix=$2; shift 2 ;;
         --uninstall) remove_client=1; shift ;;
-        --setup-docker) [[ $app_name == Soozip ]] || fail 'Docker setup is only available for Soozip.'; setup_docker=1; shift ;;
+        --setup-docker) [[ $app_name == Soozip ]] || fail 'Docker setup is only available for Soozip.'; docker_setup=yes; shift ;;
+        --skip-docker-setup) [[ $app_name == Soozip ]] || fail 'Docker setup is only available for Soozip.'; docker_setup=no; shift ;;
         -h|--help)
             printf 'Usage: bash install.sh [--prefix DIR] [--uninstall]'
-            [[ $app_name != Soozip ]] || printf ' [--setup-docker]'
+            [[ $app_name != Soozip ]] || printf ' [--setup-docker|--skip-docker-setup]'
             printf '\nInstalls %s for the current user (default: ~/.local), including an application-menu entry.\n' "$app_name"
+            [[ $app_name != Soozip ]] || printf 'Docker setup runs by default when access is unavailable. Use --skip-docker-setup to manage Docker yourself.\n'
             exit 0 ;;
         *) fail "Unknown option: $1" ;;
     esac
 done
-[[ $EUID -ne 0 ]] || fail 'Run without sudo. Only optional Docker setup needs administrator access.'
-[[ $remove_client == 0 || $setup_docker == 0 ]] || fail 'Do not combine --uninstall with --setup-docker.'
+[[ $EUID -ne 0 ]] || fail 'Run without sudo. Only Docker setup needs administrator access.'
+[[ $remove_client == 0 || $docker_setup != yes ]] || fail 'Do not combine --uninstall with --setup-docker.'
 . /etc/os-release
 [[ $ID == ubuntu && $VERSION_ID == 24.04 && $(uname -m) == x86_64 ]] || fail 'Requires Ubuntu 24.04 amd64.'
 [[ $install_prefix == /* ]] || fail '--prefix must be an absolute path.'
@@ -67,11 +70,11 @@ prerequisites=(apt-get dpkg dpkg-query)
 for command in "${prerequisites[@]}"; do
     command -v "$command" >/dev/null || fail "Missing Ubuntu prerequisite: $command. Prepare the standard desktop prerequisites before installing this client."
 done
-if ((setup_docker)); then
+if [[ $docker_setup != no ]]; then
     if command -v docker >/dev/null && [[ $(docker info --format '{{.OSType}}' 2>/dev/null) == linux ]]; then
         printf 'Docker is already accessible; no Docker changes needed.\n'
     else
-        printf 'Docker setup uses the internet, installs Docker Engine, enables its service, and adds your account to the docker group (administrator-equivalent access).\n'
+        printf 'Preparing Docker access: install Docker Engine if needed, enable its service, and add your account to the docker group (administrator-equivalent access). Installation may use the internet.\n'
         command -v sudo >/dev/null || fail 'Docker setup requires sudo.'
         sudo /bin/bash "$app_source/_internal/setup-docker.sh" "$(id -un)"
     fi
@@ -144,10 +147,19 @@ menu_published=1
 mv -T -- "$stage/menu" "$menu_file"
 installation_complete=1
 command -v update-desktop-database >/dev/null && update-desktop-database "$install_prefix/share/applications" >/dev/null 2>&1 || true
-printf '\n%s installed. Open %s from the application menu.\nTerminal command: %s\n' "$app_name" "$app_name" "$launcher"
+printf '\n%s installed.\nTerminal command: %s\n' "$app_name" "$launcher"
+docker_ready=1
 if [[ $app_name == Soozip ]]; then
     if ! command -v docker >/dev/null || [[ $(docker info --format '{{.OSType}}' 2>/dev/null) != linux ]]; then
-        printf 'Docker is not accessible in this session. Use --setup-docker for setup; after group changes, log out and back in.\n'
+        docker_ready=0
+        if [[ $docker_setup != no ]]; then
+            printf '\nBefore opening Soozip: fully log out of Ubuntu and log back in, or reboot. Opening a new terminal is not enough to refresh desktop Docker group permissions.\n'
+        else
+            printf '\nDocker setup was skipped and Docker is not accessible in this session. To configure it, run: bash %q --prefix %q --setup-docker\n' "$app_target/install.sh" "$install_prefix"
+            printf 'After group changes, fully log out of Ubuntu and log back in, or reboot.\n'
+        fi
+        printf 'After signing back in, run docker info without sudo. Open Soozip when that succeeds.\n'
     fi
 fi
+((docker_ready == 0)) || printf 'Open %s from the application menu.\n' "$app_name"
 printf 'To remove this client: bash %q --prefix %q --uninstall\n' "$app_target/install.sh" "$install_prefix"

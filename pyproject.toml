@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soozip-gaebal"
-version = "0.4.0"
+version = "0.4.1"
 description = "Soozip online package builder and Gaebal offline installer for Ubuntu 24.04"
 requires-python = ">=3.12"
 readme = "README.md"

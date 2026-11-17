@@ -1,5 +1,5 @@
 Types: deb
-URIs: http://archive.ubuntu.com/ubuntu/
+URIs: http://kr.archive.ubuntu.com/ubuntu/
 Suites: noble noble-updates
 Components: main restricted universe multiverse
 Architectures: amd64

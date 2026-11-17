@@ -52,8 +52,9 @@ EOF
     apt-get --simulate --no-remove install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     apt-get install -y --no-install-recommends --no-remove docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 fi
-systemctl enable --now docker.service
+# The group must exist before a newly started daemon creates its socket.
 groupadd --force docker
 usermod -aG docker -- "$target_user"
+systemctl enable --now docker.service
 [[ $(docker info --format '{{.OSType}}') == linux ]] || fail 'Docker did not start as a Linux engine.'
-printf '\nDocker setup complete. Log out and back in before opening Soozip so the docker group takes effect.\n'
+printf '\nDocker setup complete. Fully log out of Ubuntu and log back in, or reboot, before opening Soozip.\nOpening another terminal alone does not refresh desktop group permissions. Then verify docker info works without sudo.\n'
