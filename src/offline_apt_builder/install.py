@@ -65,17 +65,30 @@ def run_installer(bundle: Path, arguments: list[str], emit) -> str:
             emit('log', message=line.rstrip())
         code = process.wait()
     except BaseException:
-        os.killpg(process.pid, signal.SIGTERM)
         try:
+            os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
+        except ProcessLookupError:
+            process.wait()
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             process.wait()
         raise
     finally:
         process.stdout.close()
     if code:
-        raise BuildError(f'Installer failed (exit {code}). ' + ''.join(output)[-3000:])
+        details = ''.join(output)
+        errors = [line.removeprefix('ERROR: ').strip() for line in details.splitlines() if line.startswith('ERROR: ')]
+        if 'Could not get lock' in details or 'Unable to acquire' in details:
+            summary = 'Another package manager is busy. Wait for it to finish, then reopen the bundle and retry.'
+        elif 'dpkg was interrupted' in details:
+            summary = 'A previous package installation is incomplete. Resolve the dpkg error shown in Details, then reopen the bundle.'
+        else:
+            summary = errors[0] if errors else f'Installer failed (exit {code}). Review Details before retrying.'
+        raise BuildError(summary + '\n' + details[-3000:])
     return ''.join(output)
 
 
@@ -83,13 +96,26 @@ def preview(bundle: Path, emit) -> InstallPlan:
     verify_bundle(bundle)
     output = run_installer(bundle, ['--preview'], emit)
     actions = []
+    names = set()
     token = ''
     for line in output.splitlines():
         if line.startswith('PLAN\t'):
-            _, name, action, old, new = line.split('\t')
+            parts = line.split('\t')
+            if len(parts) != 5:
+                raise BuildError('Installer returned an invalid package plan. Reopen the bundle to retry.')
+            _, name, action, old, new = parts
+            if (not name or name in names or not new
+                    or action not in {'install', 'reinstall', 'upgrade', 'downgrade', 'configure', 'keep'}
+                    or (action == 'keep' and old != new)):
+                raise BuildError('Installer returned an inconsistent package plan. Reopen the bundle to retry.')
+            names.add(name)
             actions.append(PackageAction(name, action, old, new))
         elif line.startswith('APPROVAL\t'):
-            token = line.split('\t')[1]
+            if token:
+                raise BuildError('Installer returned multiple approval tokens. Reopen the bundle to retry.')
+            token = line.removeprefix('APPROVAL\t')
+    if not actions:
+        raise BuildError('Installer did not produce a package plan. Reopen the bundle to retry.')
     if not re.fullmatch('[a-f0-9]{64}', token):
         raise BuildError('Installer did not produce an approval token.')
     return InstallPlan(tuple(actions), (), token)

@@ -31,6 +31,7 @@ class SoozipWindow(BaseWindow):
         self.build_button.clicked.connect(self.build_bundle)
         self.layout.addWidget(self.build_button)
         self.result = QLabel('')
+        self.result.setTextFormat(Qt.TextFormat.PlainText)
         self.result.setWordWrap(True)
         self.result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.result)
@@ -53,6 +54,8 @@ class SoozipWindow(BaseWindow):
             self.output.setText(directory)
 
     def build_bundle(self):
+        if self.busy:
+            return
         names = [name for line in self.packages.toPlainText().splitlines() for name in line.split('#', 1)[0].split()]
         from offline_apt_builder.inputs import validate_packages
         try:

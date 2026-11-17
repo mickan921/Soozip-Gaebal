@@ -26,6 +26,7 @@ class ShellInstallerTests(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.bin) + ':' + os.environ['PATH']}
         self.command('apt-get', 'printf "APT fixture completed\\n"')
         self.command('apt-mark', 'exit 0')
+        self.command('dpkg-query', "printf 'installed\\t1'")
 
     def command(self, name, body):
         path = self.bin / name
@@ -72,6 +73,60 @@ printf '     1 -1\\n'
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Checksum verification failed', result.stderr)
         self.assertNotIn('APT fixture completed', result.stdout)
+
+    def test_existing_versions_are_classified_without_failure(self):
+        self.command('apt-cache', "printf ' *** 1 500\\n'")
+        for status, old, action in (('', '', 'install'), ('installed', '0.9', 'upgrade'),
+                                    ('installed', '1', 'keep'), ('installed', '2', 'downgrade'),
+                                    ('installed', '1:0.1', 'downgrade'),
+                                    ('unpacked', '2', 'downgrade'), ('half-configured', '0.9', 'upgrade')):
+            with self.subTest(old=old, action=action):
+                self.command('dpkg-query', f"printf '{status}\\t{old}'")
+                simulation = '' if action == 'keep' else 'Inst example (1 local [amd64])\\nConf example (1 local [amd64])\\n'
+                self.command('apt-get', f'''if [[ "$1" == --simulate ]]; then printf '{simulation}'; fi''')
+                result = self.run_preview()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f'PLAN\texample\t{action}\t{old}\t1\n', result.stdout)
+                self.assertEqual(result.stdout.count('PLAN\t'), 1)
+
+    def test_configuration_only_transaction_is_not_reported_as_already_installed(self):
+        self.command('apt-cache', "printf ' *** 1 500\\n'")
+        self.command('dpkg-query', "printf '1'")
+        self.command('apt-get', '''if [[ "$1" == --simulate ]]; then printf 'Conf example (1 local [amd64])\\n'; fi''')
+        result = self.run_preview()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PLAN\texample\tconfigure\t1\t1', result.stdout)
+        self.assertNotIn('\tkeep\t', result.stdout)
+
+    def test_dependency_conflict_has_actionable_message_and_no_approval(self):
+        self.command('apt-cache', "printf '     1 500\\n'")
+        self.command('apt-get', '''if [[ "$1" == --simulate ]]; then echo 'E: Unmet dependencies' >&2; exit 100; fi''')
+        result = self.run_preview()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Cannot safely install these bundle versions', result.stderr)
+        self.assertIn('No packages were changed', result.stderr)
+        self.assertIn('Unmet dependencies', result.stdout)
+        self.assertNotIn('APPROVAL\t', result.stdout)
+
+    def test_held_matching_version_is_kept_but_changes_are_refused(self):
+        self.command('apt-cache', "printf ' *** 1 500\\n'")
+        self.command('apt-mark', "echo example")
+        result = self.run_preview()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PLAN\texample\tkeep\t1\t1', result.stdout)
+        self.command('apt-get', '''if [[ "$1" == --simulate ]]; then printf 'Inst example (1 local [amd64])\\n'; fi''')
+        result = self.run_preview()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Changing held package', result.stderr)
+        self.assertNotIn('APPROVAL\t', result.stdout)
+
+    def test_missing_target_action_is_not_mistaken_for_no_changes(self):
+        self.command('apt-cache', "printf '     1 500\\n'")
+        self.command('dpkg-query', 'exit 1')
+        result = self.run_preview()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('APT did not plan installation', result.stderr)
+        self.assertNotIn('APPROVAL\t', result.stdout)
 
 
 if __name__ == '__main__':

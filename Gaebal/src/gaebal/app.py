@@ -1,5 +1,7 @@
 """Gaebal: the offline package-bundle installer."""
+import re
 import tempfile
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem)
 from offline_apt_builder.desktop.base import BaseWindow, launch
@@ -17,6 +19,7 @@ class GaebalWindow(BaseWindow):
         self.open_button.clicked.connect(self.choose_bundle)
         self.layout.addWidget(self.open_button)
         self.summary = QLabel('No bundle selected')
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setWordWrap(True)
         self.layout.addWidget(self.summary)
         self.table = QTableWidget(0, 4)
@@ -46,9 +49,6 @@ class GaebalWindow(BaseWindow):
     def load_bundle(self, filename):
         if self.busy:
             return
-        if self.workspace:
-            self.workspace.cleanup()
-        self.workspace = tempfile.TemporaryDirectory(prefix='offline-apt-import-')
         self.plan = None
         self.bundle = None
         self.table.setRowCount(0)
@@ -57,6 +57,15 @@ class GaebalWindow(BaseWindow):
             checkbox.setChecked(False)
             checkbox.setEnabled(False)
         self.install_button.setEnabled(False)
+        self.install_button.setText('Install Reviewed Packages…')
+        try:
+            if self.workspace:
+                self.workspace.cleanup()
+                self.workspace = None
+            self.workspace = tempfile.TemporaryDirectory(prefix='offline-apt-import-')
+        except OSError as exc:
+            self.on_event({'type': 'error', 'message': f'Cannot prepare bundle workspace: {exc}. Check free space and folder permissions, then reopen the bundle.'})
+            return
         self.start('preview', {'archive': filename, 'workspace': self.workspace.name})
 
     def on_event(self, event):
@@ -66,11 +75,28 @@ class GaebalWindow(BaseWindow):
             m = event['manifest']
             self.summary.setText(f"Build: {m.get('build_id', 'unknown')} • VALIDATED • Integrity verified\nRequested: {', '.join(m['requested'])}")
         elif event.get('type') == 'plan':
+            actions = event['actions']
+            blockers = event['blockers']
+            token = event['approval_token']
+            if (not isinstance(actions, list) or not actions
+                    or not isinstance(blockers, list) or not all(isinstance(b, str) for b in blockers)
+                    or not isinstance(token, str) or not re.fullmatch('[a-f0-9]{64}', token)):
+                raise ValueError('Invalid package plan')
+            for action in actions:
+                if (not isinstance(action, dict)
+                        or not all(isinstance(action.get(key), str) for key in ('name', 'action', 'old_version', 'new_version'))
+                        or action['action'] not in {'keep', 'install', 'reinstall', 'upgrade', 'downgrade', 'configure'}
+                        or not action['name'] or not action['new_version']
+                        or (action['action'] == 'keep' and action['old_version'] != action['new_version'])):
+                    raise ValueError('Invalid package action')
             self.plan = event
             self.table.setRowCount(len(event['actions']))
             for row, action in enumerate(event['actions']):
                 for column, key in enumerate(('name', 'action', 'old_version', 'new_version')):
-                    self.table.setItem(row, column, QTableWidgetItem(action[key]))
+                    value = action[key]
+                    if key == 'action' and value == 'keep':
+                        value = 'Already installed'
+                    self.table.setItem(row, column, QTableWidgetItem(value))
             self.table.resizeColumnsToContents()
 
     def finished(self, code):
@@ -81,17 +107,21 @@ class GaebalWindow(BaseWindow):
         actions = self.plan['actions'] if self.plan else []
         self.upgrades.setEnabled(any(a['action'] == 'upgrade' for a in actions))
         self.downgrades.setEnabled(any(a['action'] == 'downgrade' for a in actions))
+        if self.plan and not self.plan['blockers'] and actions and all(a['action'] == 'keep' for a in actions):
+            self.status.setText('Already installed — all requested versions match. No changes are needed.')
+            self.install_button.setText('Already Installed')
         self.update_install()
 
     def update_install(self):
-        permitted = bool(self.plan and not self.plan['blockers'] and not self.busy)
+        permitted = bool(self.bundle and self.plan and not self.plan['blockers'] and not self.busy)
         if permitted:
             actions = self.plan['actions']
-            permitted = (not any(a['action'] == 'upgrade' for a in actions) or self.upgrades.isChecked()) and (not any(a['action'] == 'downgrade' for a in actions) or self.downgrades.isChecked())
+            permitted = any(a['action'] != 'keep' for a in actions) and (not any(a['action'] == 'upgrade' for a in actions) or self.upgrades.isChecked()) and (not any(a['action'] == 'downgrade' for a in actions) or self.downgrades.isChecked())
         self.install_button.setEnabled(permitted)
 
     def install_bundle(self):
-        if not self.plan or self.busy:
+        self.update_install()
+        if not self.install_button.isEnabled():
             return
         self.install_button.setEnabled(False)
         self.upgrades.setEnabled(False)
@@ -105,12 +135,18 @@ class GaebalWindow(BaseWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        self.load_bundle(event.mimeData().urls()[0].toLocalFile())
+        urls = event.mimeData().urls()
+        if not self.busy and len(urls) == 1 and urls[0].isLocalFile() and urls[0].toLocalFile().endswith('.7z'):
+            self.load_bundle(urls[0].toLocalFile())
+            event.acceptProposedAction()
 
     def closeEvent(self, event):
         super().closeEvent(event)
         if event.isAccepted() and self.workspace:
-            self.workspace.cleanup()
+            try:
+                self.workspace.cleanup()
+            except OSError as exc:
+                self.on_event({'type': 'error', 'message': f'Cannot remove temporary workspace {self.workspace.name}: {exc}'})
 
 def main():
     return launch(GaebalWindow, "Gaebal")

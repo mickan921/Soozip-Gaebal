@@ -14,6 +14,8 @@ installed Ubuntu system is still required; the bundle is not an OS installer.
 
 Two native PySide6 desktop clients and the Python CLI share the build and installation engines. macOS, arm64, cross builds, PPAs, and vendor repositories are unsupported.
 
+Both clients display their application version in the bottom-right corner.
+
 ## Download and transfer the portable apps
 
 Use **Ubuntu 24.04 LTS, amd64 (x86_64)** on both machines. Other Ubuntu releases,
@@ -184,7 +186,11 @@ for the authentication prompt; an SSH-only shell is not sufficient.
    authentication.
 3. Review the package names, actions, and versions. If upgrades or downgrades
    are listed, select the corresponding approval checkbox only after reviewing
-   them. Removals and changes to held packages are refused.
+   them. Packages at the requested version show **Already installed**. If all
+   requested versions match and no other changes are needed, installation is
+   disabled and no administrator authentication is requested. An unpacked
+   package that still needs configuration is listed as **configure**.
+   Removals and changes to held packages are refused.
 4. Click **Install Reviewed Packages…** and approve Ubuntu's authentication
    dialog locally. Cancelling that dialog leaves packages unchanged; reopen the
    bundle to obtain a fresh preview before retrying.
@@ -199,6 +205,16 @@ The `.7z` alone is accepted. If a matching-name `.7z.sha256` file is present nex
 to it, it must match; the app also checks internal hashes. Reopening and installing
 the same bundle again succeeds without changes when the requested versions are
 already installed. No online repository is used as a fallback.
+
+During version changes, the installer keeps locally edited dpkg configuration
+files when a prompt would otherwise be required. It waits up to 30 seconds for
+another APT/dpkg transaction to release its lock. Dependency or version conflicts
+stop the preview with details and leave packages unchanged; resolve the conflict
+or build a compatible bundle, then reopen it to retry. Errors during installation
+can leave completed package changes in place, so review Details before retrying.
+
+The 0.4.2 installer changes require bundles rebuilt with Soozip 0.4.2 and the
+matching Gaebal client. Older bundles report an installer-version mismatch.
 
 ### Update, customize, or remove an app
 
@@ -461,9 +477,24 @@ Docker integration and acceptance tests are skipped unless explicitly enabled. O
 OFFLINE_APT_INTEGRATION=1 PYTHONPATH=src:Soozip/src:Gaebal/src \
   python3 -m unittest discover -s tests -p test_integration.py -v
 
+# Complex 11-package graph with the Qt UI and the built portable Gaebal worker.
+# Requires dist/Gaebal to match the current source version and installer.
+OFFLINE_APT_COMPLEX=1 PYTHONPATH=src:Soozip/src:Gaebal/src \
+  .venv/bin/python tests/test_complex_bundle.py -v
+
 # Full acceptance: additionally download/build/test jq and the development set.
 ./tests/test_end_to_end.sh
 ```
+
+The complex-bundle test records real maintainer-script ordering, simultaneous
+upgrades and downgrades, a matching-version rerun, incompatible installed
+dependencies, holds, pinning, missing approvals, and stale approvals. It checks
+that rejected operations leave dpkg state unchanged and that the Qt event loop
+remains responsive and can retry. The real worker runs inside disposable
+containers with `--network none`; the test redirects worker launch from pkexec
+to Docker and does not test interactive desktop authentication. Its validated
+test bundle, transaction logs, screenshots, and UI-state records are retained
+in the printed `build/gaebal-complex-*` directory.
 
 The full suite creates real packages, checks path/read-only handling, optional recommendations, virtual-provider installation, pre-dependencies/alternatives, dry runs, idempotence, pinning, holds, removals, checksum corruption, wrong platforms, missing dependencies, failed maintainer scripts, and source/hook isolation. Acceptance bundles and reports remain in `offline-output/acceptance`, configurable through `OFFLINE_APT_TEST_OUTPUT`. The real builds assert that `libc6`, already present in the reference image, was nevertheless bundled. They also resolve and retrieve each bundle's full dependency set using an empty installed-package database and only its local repository in a network-disabled container. The `jq` check follows a multi-level dependency chain and must fail when `libc6` is removed from the repository index, even though the container has it installed. This checks dependency completeness separately from installing on the minimal Ubuntu base.
 
@@ -484,6 +515,27 @@ caused by changing target package state before installation.
 
 ### Validation status for this release
 
+Version 0.4.2 displays the runtime version in both clients, recovers controls after
+worker and workspace failures, and explicitly previews packages that are already
+installed or still need configuration. Version changes, including changes to
+partially installed packages, require approval. Configuration-file prompts are
+handled without a terminal while preserving local edits.
+
+Local Qt and shell regression tests and real Docker package-transaction tests
+passed, including repeat installs, upgrades, downgrades, partially installed
+packages, held-package protection, and modified configuration files. Both version
+labels and the already-installed UI were checked with offscreen Qt rendering.
+Fresh-desktop, Wayland/X11, and interactive polkit acceptance checks have not been
+repeated for 0.4.2.
+
+**Rebuild package bundles with Soozip 0.4.2 and transfer the matching Gaebal
+0.4.2 client.** The installer embedded in each bundle has changed; updating
+Gaebal alone does not update old bundles. Installer bytes must match the client
+and the bundle's checksum and validation evidence. Do not edit an existing
+bundle's `install.sh` or checksums to bypass the version check.
+
+The following results describe earlier releases:
+
 Version 0.4.1 makes Soozip's Docker setup the default (with
 `--skip-docker-setup` available), selects the Korean Ubuntu archive mirror,
 and fixes a Gaebal exit-141 failure after reading local package lists. The
@@ -497,12 +549,6 @@ runs, including the exit-141 regression. Real Korean-mirror builds of `jq`
 installation and dependency-closure checks. The rebuilt Gaebal worker also
 passed import, preview, and installation in a network-disabled container
 without separately installed Python, 7-Zip, or Docker commands.
-
-**Rebuild package bundles with Soozip 0.4.1 and transfer the matching Gaebal
-0.4.1 client.** The fix changes the installer embedded in each bundle; updating
-Gaebal alone does not update old bundles. Installer bytes must match the client
-and the bundle's checksum and validation evidence. Do not edit an existing
-bundle's `install.sh` or checksums to work around this failure.
 
 The following acceptance results describe the earlier 0.4.0 baseline:
 
@@ -532,7 +578,7 @@ these results are not a guarantee for every customized destination image.
 | Unsupported builder | Use an Ubuntu 24.04 amd64 workstation; help/unit tests can run on macOS |
 | Docker unavailable | Check installation, daemon state, current user access, and the active local Docker context |
 | Docker socket permission denied | Rerun Soozip's installer to configure Docker access, fully log out and back in or reboot, then verify `docker info` without sudo before opening Soozip |
-| Gaebal exit 141 after reading local package lists | Rebuild the bundle with Soozip 0.4.1 and use matching Gaebal 0.4.1; the old installer could close its APT policy pipe early. This is separate from checksum corruption |
+| Gaebal exit 141 after reading local package lists | Rebuild the bundle with Soozip 0.4.2 and use matching Gaebal 0.4.2; an old installer could close its APT policy pipe early. This is separate from checksum corruption |
 | Package unavailable/ambiguous | Check the exact Ubuntu package name or specify a concrete provider; third-party repositories are not supported |
 | Network or mirror failure | Check online connectivity/proxy configuration and rebuild; partial results are not published |
 | Insufficient disk | Free space in `/tmp`, Docker storage, and the output filesystem, then rebuild |

@@ -52,25 +52,29 @@ def docker(*args, check=True):
     return subprocess.run(["docker", *args], check=check, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
+def prepare_installer_fixtures(cls):
+    check_host("amd64")
+    cls.workspace = Path(tempfile.mkdtemp(prefix="offline-apt-fixtures-", dir="/tmp"))
+    cls.image = "offline-apt-fixtures:" + uuid.uuid4().hex[:12]
+    cls.addClassCleanup(shutil.rmtree, cls.workspace, ignore_errors=True)
+    cls.addClassCleanup(docker, "image", "rm", cls.image, check=False)
+    docker("pull", "--platform", "linux/amd64", "ubuntu:24.04")
+    image = json.loads(docker("image", "inspect", "--format", "{{json .}}", "ubuntu:24.04").stdout)
+    cls.base = image["Id"]
+    context = ROOT / "src/offline_apt_builder/resources"
+    docker("build", "--platform", "linux/amd64", "--build-arg", "BASE_IMAGE=" + image["RepoDigests"][0],
+           "--file", str(context / "Dockerfile.builder"), "--tag", cls.image, str(context))
+    docker("run", "--rm", "--network", "none", "--volume", f"{ROOT}:/source:ro",
+           "--volume", f"{cls.workspace}:/work", "--env", "PYTHONPATH=/source/src",
+           "--env", f"BUILDER_UID={os.getuid()}", "--env", f"BUILDER_GID={os.getgid()}",
+           "--entrypoint", "python3", cls.image, "/source/tests/fixtures/build_fixtures.py")
+
+
 @unittest.skipUnless(ENABLED, "Set OFFLINE_APT_INTEGRATION=1 on Ubuntu 24.04 amd64 with Docker")
 class InstallerIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        check_host("amd64")
-        cls.workspace = Path(tempfile.mkdtemp(prefix="offline-apt-fixtures-", dir="/tmp"))
-        cls.image = "offline-apt-fixtures:" + uuid.uuid4().hex[:12]
-        cls.addClassCleanup(shutil.rmtree, cls.workspace, ignore_errors=True)
-        cls.addClassCleanup(docker, "image", "rm", cls.image, check=False)
-        docker("pull", "--platform", "linux/amd64", "ubuntu:24.04")
-        image = json.loads(docker("image", "inspect", "--format", "{{json .}}", "ubuntu:24.04").stdout)
-        cls.base = image["Id"]
-        context = ROOT / "src/offline_apt_builder/resources"
-        docker("build", "--platform", "linux/amd64", "--build-arg", "BASE_IMAGE=" + image["RepoDigests"][0],
-               "--file", str(context / "Dockerfile.builder"), "--tag", cls.image, str(context))
-        docker("run", "--rm", "--network", "none", "--volume", f"{ROOT}:/source:ro",
-               "--volume", f"{cls.workspace}:/work", "--env", "PYTHONPATH=/source/src",
-               "--env", f"BUILDER_UID={os.getuid()}", "--env", f"BUILDER_GID={os.getgid()}",
-               "--entrypoint", "python3", cls.image, "/source/tests/fixtures/build_fixtures.py")
+        prepare_installer_fixtures(cls)
 
     def install(self, bundle="valid", flags="--yes --allow-upgrades", setup="", after="", expected=0):
         # All shell fragments below are fixed test code, not package/user input.
@@ -117,8 +121,28 @@ assert_package_absent offline-test-tool
         self.assertIn("transaction changed", result.stdout)
 
     def test_readonly_spaces_predepends_alternatives_and_repeat_install(self):
-        output = self.install(after="bash '/bundle with spaces #/install.sh' --yes; dpkg-query -W -f='${db:Status-Status}' offline-test-pre | grep -qx installed")
+        output = self.install(after="bash '/bundle with spaces #/install.sh' --preview; bash '/bundle with spaces #/install.sh' --yes; dpkg-query -W -f='${db:Status-Status}' offline-test-pre | grep -qx installed")
         self.assertIn("INSTALLED\toffline-test-tool\t2", output)
+        self.assertIn('PLAN\toffline-test-tool\tkeep\t2\t2', output)
+        self.assertIn('no package changes needed', output)
+
+    def test_upgrade_keeps_modified_configuration_without_a_terminal(self):
+        setup = "dpkg -i /fixtures/pool/offline-test-config_1_all.deb; printf 'local setting\\n' > /etc/offline-test.conf"
+        self.install(bundle='config', setup=setup, flags='--yes --allow-upgrades </dev/null',
+                     after="test \"$(cat /etc/offline-test.conf)\" = 'local setting'; test \"$(dpkg-query -W -f='${Version}' offline-test-config)\" = 2")
+
+    def test_unpacked_package_is_reviewed_and_configured(self):
+        output = self.install(bundle='old', setup='dpkg --unpack /fixtures/pool/offline-test-tool_1_all.deb',
+                              flags='--preview', after="test \"$(dpkg-query -W -f='${db:Status-Status}' offline-test-tool)\" = unpacked")
+        self.assertIn('PLAN\toffline-test-tool\tconfigure\t1\t1', output)
+        self.install(bundle='old', setup='dpkg --unpack /fixtures/pool/offline-test-tool_1_all.deb')
+
+    def test_version_change_of_unpacked_package_still_needs_approval(self):
+        setup = 'dpkg --unpack /fixtures/pool/offline-test-tool_1_all.deb'
+        output = self.install(setup=setup, flags='--yes', expected=1,
+                              after="test \"$(dpkg-query -W -f='${Version}' offline-test-tool)\" = 1")
+        self.assertIn('--allow-upgrades', output)
+        self.install(setup=setup)
 
     def test_dry_run_installs_nothing(self):
         self.install(flags="--dry-run", after="assert_package_absent offline-test-tool")

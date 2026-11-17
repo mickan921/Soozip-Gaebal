@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, Signal
 from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget)
+
+from offline_apt_builder import __version__
 
 
 class Worker(QProcess):
@@ -16,32 +18,60 @@ class Worker(QProcess):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.buffer = b''
+        self.completed_once = False
         self.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         self.readyReadStandardOutput.connect(self.consume)
-        self.readyReadStandardError.connect(lambda: self.message.emit({'type': 'log', 'message': bytes(self.readAllStandardError()).decode(errors='replace')}))
+        self.readyReadStandardError.connect(self.consume_errors)
         self.finished.connect(self.done)
         self.errorOccurred.connect(self.failed)
 
     def failed(self, error):
         if error == QProcess.ProcessError.FailedToStart:
             self.message.emit({'type': 'error', 'message': self.errorString()})
-            self.completed.emit(127)
+            self.complete(127)
+
+    def complete(self, code):
+        if not self.completed_once:
+            self.completed_once = True
+            self.completed.emit(code)
+
+    def consume_errors(self):
+        message = bytes(self.readAllStandardError()).decode(errors='replace')
+        if message:
+            self.message.emit({'type': 'log', 'message': message})
+
+    def dispatch(self, line):
+        if not line.strip():
+            return
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            event = None
+        if isinstance(event, dict) and isinstance(event.get('type'), str):
+            self.message.emit(event)
+        else:
+            self.message.emit({'type': 'log', 'message': line.decode(errors='replace')})
 
     def consume(self):
         self.buffer += bytes(self.readAllStandardOutput())
         while b'\n' in self.buffer:
             line, self.buffer = self.buffer.split(b'\n', 1)
-            try:
-                self.message.emit(json.loads(line))
-            except (ValueError, UnicodeError):
-                self.message.emit({'type': 'log', 'message': line.decode(errors='replace')})
+            self.dispatch(line)
 
-    def done(self, code, _status):
+    def done(self, code, status):
         self.consume()
-        self.completed.emit(code)
+        if self.buffer:
+            self.dispatch(self.buffer)
+            self.buffer = b''
+        self.consume_errors()
+        if status == QProcess.ExitStatus.CrashExit:
+            self.message.emit({'type': 'error', 'message': 'Worker exited unexpectedly. Review Details and retry.'})
+            code = code or 1
+        self.complete(code)
 
     def launch(self, operation, request, privileged=False):
         self.buffer = b''
+        self.completed_once = False
         if getattr(sys, 'frozen', False):
             command = [str(Path(sys.executable).with_name('offline-apt-worker'))]
         else:
@@ -74,15 +104,21 @@ class BaseWindow(QMainWindow):
         self.had_error = False
         self.succeeded = False
         self.worker = Worker(self)
-        self.worker.message.connect(self.on_event)
+        self.worker.message.connect(self.receive_event)
         self.worker.completed.connect(self.finished)
         widget = QWidget()
         self.setCentralWidget(widget)
         self.layout = QVBoxLayout(widget)
+        self.version_label = QLabel(f'v{__version__}')
+        self.version_label.setContentsMargins(0, 0, 8, 2)
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().addPermanentWidget(self.version_label)
         heading = QLabel(title)
         heading.setStyleSheet('font-size: 22px; font-weight: 600; margin: 8px 0;')
         self.layout.addWidget(heading)
         self.status = QLabel('Ready')
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
@@ -102,6 +138,8 @@ class BaseWindow(QMainWindow):
         self.layout.addWidget(self.cancel)
 
     def start(self, operation, request, privileged=False):
+        if self.busy:
+            return
         self.busy = True
         self.had_error = False
         self.succeeded = False
@@ -112,7 +150,19 @@ class BaseWindow(QMainWindow):
         self.cancel.setEnabled(not privileged)
         for widget in self.inputs:
             widget.setEnabled(False)
-        self.worker.launch(operation, request, privileged)
+        try:
+            self.worker.launch(operation, request, privileged)
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.on_event({'type': 'error', 'message': f'Cannot start worker: {exc}'})
+            self.finished(1)
+
+    def receive_event(self, event):
+        # Exceptions raised in Qt slots otherwise bypass the job's error path,
+        # potentially leaving stale approvals or permanently disabled controls.
+        try:
+            self.on_event(event)
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+            BaseWindow.on_event(self, {'type': 'error', 'message': 'Invalid worker response. Review Details and retry.'})
 
     def on_event(self, event):
         kind = event.get('type')
@@ -122,13 +172,17 @@ class BaseWindow(QMainWindow):
             self.status.setText(event['message'])
         elif kind == 'error':
             self.had_error = True
-            self.status.setText(event['message'].splitlines()[0])
-            self.logs.appendPlainText(event['message'])
+            self.succeeded = False
+            message = event['message'] or 'Operation failed. Review Details and retry.'
+            self.status.setText(message.splitlines()[0])
+            self.logs.appendPlainText(message)
         elif kind == 'result':
-            self.succeeded = True
-            self.status.setText(event['status'])
+            if not self.had_error:
+                self.status.setText(event['status'])
+                self.succeeded = True
 
     def finished(self, code):
+        self.succeeded = bool(code == 0 and self.succeeded and not self.had_error)
         self.busy = False
         self.installing = False
         self.cancel.setEnabled(False)
@@ -136,7 +190,7 @@ class BaseWindow(QMainWindow):
         self.progress.setValue(int(code == 0 and self.succeeded))
         for widget in self.inputs:
             widget.setEnabled(True)
-        if code == 126:
+        if code == 126 and not self.had_error:
             self.status.setText('Administrator authentication was cancelled. No packages were installed.')
         elif code and not self.had_error:
             self.status.setText('Operation failed. Check Details and confirm desktop authentication is available.')
@@ -155,6 +209,7 @@ class BaseWindow(QMainWindow):
 def launch(window_class, application_name):
     app = QApplication(sys.argv)
     app.setApplicationName(application_name)
+    app.setApplicationVersion(__version__)
     if os.geteuid() == 0:
         QMessageBox.critical(None, 'Launch as your desktop user', 'Run the desktop client without sudo. Installation requests administrator authentication when needed.')
         return 1

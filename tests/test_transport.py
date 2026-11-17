@@ -141,3 +141,18 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaisesRegex(BuildError, 'changed'):
                     install(root, 'a'*64, False, False, lambda *a, **kw: None)
                 run.assert_not_called()
+
+    def test_invalid_preview_records_are_rejected(self):
+        records = ('PLAN\texample\tkeep\t1\t2\n',
+                   'PLAN\texample\tunknown\t1\t1\n',
+                   'PLAN\texample\tupgrade\n',
+                   'PLAN\texample\tkeep\t1\t1\n' * 2,
+                   'APPROVAL\t' + 'b'*64 + '\n')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            valid_bundle(root)
+            for record in records:
+                with self.subTest(record=record), patch('offline_apt_builder.install.run_installer',
+                        return_value=record + 'APPROVAL\t' + 'a'*64 + '\n'):
+                    with self.assertRaises(BuildError):
+                        preview(root, lambda *a, **kw: None)

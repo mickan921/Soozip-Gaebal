@@ -112,6 +112,7 @@ APT::Sandbox::User "$(id -un)";
 Acquire::Languages "none";
 Acquire::Retries "0";
 APT::Update::Error-Mode "any";
+DPkg::Lock::Timeout "30";
 CONFIG
 export APT_CONFIG="$tmp/apt.conf"
 echo 'Integrity: verified SHA-256 checksums; the local repository uses trusted=yes.'
@@ -148,7 +149,9 @@ stage=preview
 state_before="$(state_fingerprint)"
 apt-mark showhold | sed 's/:.*//' > "$tmp/holds"
 echo '[3/4] Planned changes:'
-apt-get --simulate --no-remove install "${targets[@]}" | tee "$tmp/simulation"
+if ! apt-get --simulate --no-remove install "${targets[@]}" 2>&1 | tee "$tmp/simulation"; then
+  fail 'Cannot safely install these bundle versions on this machine. Review the APT details above for conflicting versions, missing dependencies, or package-manager problems. No packages were changed; resolve the conflict or build a compatible bundle, then reopen it.'
+fi
 if grep -Eq '^Remv[[:space:]]' "$tmp/simulation"; then
   fail 'Package removals are forbidden. Resolve the conflict without removing packages.'
 fi
@@ -164,8 +167,11 @@ while IFS=$'\t' read -r name new; do
   stage=preview
   current="$(dpkg-query -W -f='${db:Status-Status}\t${Version}' "$name" 2>/dev/null || true)"
   old=''
-  if [[ "$current" == installed$'\t'* ]]; then old="${current#*$'\t'}"; fi
-  if [[ "$old" != "$new" ]] && grep -Fxq "${name%%:*}" "$tmp/holds"; then
+  case "${current%%$'\t'*}" in
+    installed|unpacked|half-configured|half-installed|triggers-pending|triggers-awaited)
+      old="${current#*$'\t'}" ;;
+  esac
+  if grep -Fxq "${name%%:*}" "$tmp/holds"; then
     fail "Changing held package $name is forbidden."
   fi
   action=install
@@ -181,6 +187,26 @@ while IFS=$'\t' read -r name new; do
   fi
   printf 'PLAN\t%s\t%s\t%s\t%s\n' "$name" "$action" "$old" "$new" >> "$tmp/actions"
 done < "$tmp/changes"
+# APT may only configure an unpacked package, without an Inst record. Include
+# that work in the reviewed transaction rather than declaring it a no-op.
+awk '$1 == "Conf" { ver=$3; sub(/^\(/,"",ver); sub(/\)$/,"",ver); print $2 "\t" ver }' "$tmp/simulation" > "$tmp/configures"
+while IFS=$'\t' read -r name new; do
+  [[ -n "$name" ]] || continue
+  if awk -F '\t' -v name="$name" '$2 == name { found=1 } END { exit !found }' "$tmp/actions"; then continue; fi
+  [[ "$new" =~ ^[a-zA-Z0-9.+:~_-]+$ ]] || fail 'Cannot parse APT configuration plan; refusing installation.'
+  if grep -Fxq "${name%%:*}" "$tmp/holds"; then fail "Changing held package $name is forbidden."; fi
+  current="$(dpkg-query -W -f='${Version}' "$name" 2>/dev/null || true)"
+  printf 'PLAN\t%s\tconfigure\t%s\t%s\n' "$name" "$current" "$new" >> "$tmp/actions"
+done < "$tmp/configures"
+# Exact versions that APT will leave untouched still belong in the UI preview.
+for target in "${targets[@]}"; do
+  name="${target%%=*}"
+  if awk -F '\t' -v name="$name" '$2 == name || $2 == name ":amd64" { found=1 } END { exit !found }' "$tmp/actions"; then continue; fi
+  expected="${target#*=}"
+  current="$(dpkg-query -W -f='${db:Status-Status}\t${Version}' "$name" 2>/dev/null || true)"
+  [[ "$current" == "installed"$'\t'"$expected" ]] || fail "APT did not plan installation of $name=$expected. Reopen the bundle after resolving the package state."
+  printf 'PLAN\t%s\tkeep\t%s\t%s\n' "$name" "$expected" "$expected" >> "$tmp/actions"
+done
 [[ "$(state_fingerprint)" == "$state_before" ]] || fail 'Target state changed during preview; review again.'
 computed_token="$({ printf '%s\n' "$state_before"; (cd -- "$root" && sha256sum SHA256SUMS); cat "$tmp/actions"; } | sha256sum | awk '{print $1}')"
 if ((preview)); then
@@ -212,12 +238,18 @@ if [[ -s "$tmp/downgrades" ]] && ((allow_downgrades == 0)); then
 fi
 if ((assume_yes == 0)); then approve 'Install the displayed package transaction?'; fi
 [[ "$(state_fingerprint)" == "$state_before" ]] || fail 'Installed package state changed during review. Run the installer again to obtain a fresh plan.'
-options=(--assume-yes --no-remove)
+# Preserve locally edited conffiles when dpkg would otherwise prompt on stdin
+# (the desktop helper has no terminal). Use dpkg's default when available.
+options=(--assume-yes --no-remove -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 if ((allow_downgrades)); then options+=(--allow-downgrades); fi
 if ((assume_yes)); then export DEBIAN_FRONTEND=noninteractive; fi
 stage=install
 echo '[4/4] Installing and checking dependency consistency...'
-apt-get "${options[@]}" install "${targets[@]}"
+if awk -F '\t' '$3 != "keep" { changed=1 } END { exit !changed }' "$tmp/actions"; then
+  apt-get "${options[@]}" install "${targets[@]}"
+else
+  echo 'All requested package versions are already installed; no package changes needed.'
+fi
 apt-get check
 for target in "${targets[@]}"; do
   name="${target%%=*}"
