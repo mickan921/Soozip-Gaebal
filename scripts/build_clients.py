@@ -91,6 +91,10 @@ def main():
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(source, target)
         shutil.copyfile(ROOT / 'README.md', folder / 'README.md')
+        shutil.copy2(ROOT / folder.name / 'install.sh', folder / 'install.sh')
+        shutil.copyfile(ROOT / 'packaging/install-client.sh', folder / '_internal/install-client.sh')
+        if folder.name == 'Soozip':
+            shutil.copyfile(ROOT / 'packaging/setup-docker.sh', folder / '_internal/setup-docker.sh')
         (folder / 'THIRD-PARTY.txt').write_text(
             'Python: https://www.python.org/psf/license/\n'
             'Qt/PySide6: https://code.qt.io/pyside/pyside-setup/ (LGPL/GPL; see licenses/)\n'
@@ -103,6 +107,16 @@ def main():
             'version': project['version'], 'built_utc': datetime.now(timezone.utc).isoformat(),
             'platform': 'Ubuntu 24.04 amd64', '7zip': VERSION,
             '7zip_source_sha256': DIGEST, 'dependencies': (ROOT / 'packaging/requirements-release.txt').read_text().splitlines()}, indent=2))
+        checksums = []
+        for path in sorted(folder.rglob('*')):
+            if path.is_file() and path.name != 'CLIENT-SHA256SUMS':
+                relative = path.relative_to(folder).as_posix()
+                if '\n' in relative or '\\' in relative:
+                    raise SystemExit(f'Unsupported release filename: {relative}')
+                with path.open('rb') as stream:
+                    checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+                checksums.append(f'{checksum}  ./{relative}\n')
+        (folder / 'CLIENT-SHA256SUMS').write_text(''.join(checksums))
         destination = ROOT / 'dist' / f'{folder.name}-ubuntu24.04-amd64.tar.gz'
         with tarfile.open(destination, 'w:gz') as tar:
             tar.add(folder, arcname=folder.name)

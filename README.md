@@ -31,7 +31,7 @@ The final app archives are in `dist/`. Soozip is the online builder; Gaebal is t
 | `Gaebal-ubuntu24.04-amd64.tar.gz.sha256` | Checksum for the offline app archive |
 
 Each app archive includes its Python/Qt runtime, worker, standalone 7-Zip
-extractor, this README, licenses, and `release.json`. **No Python, pip, PySide6,
+extractor, `install.sh`, this README, licenses, and `release.json`. **No Python, pip, PySide6,
 or 7-Zip installation is required to run the portable apps.** The offline app
 does not need Docker. The online app requires a separately installed local
 Docker Engine and permission to use it.
@@ -47,22 +47,40 @@ Keep each extracted application folder intact, including `_internal/` and
 
 ## Install and use Soozip (online)
 
-1. Install Docker Engine using [Docker's Ubuntu instructions](https://docs.docker.com/engine/install/ubuntu/)
-   and configure your normal account using [Docker's Linux post-installation instructions](https://docs.docker.com/engine/install/linux-postinstall/).
-   Check `docker info` succeeds as your normal user. Do not run the GUI with sudo.
-2. Copy the online `.tar.gz` and its `.sha256` file into `~/Downloads` on the
-   online machine. Verify, extract, and start it:
+1. Copy the Soozip `.tar.gz` and its `.sha256` file into `~/Downloads`.
+   Verify and extract the archive, then run the installer as your normal user:
 
    ```bash
    cd "$HOME/Downloads"
    sha256sum -c Soozip-ubuntu24.04-amd64.tar.gz.sha256
-   mkdir -p "$HOME/Applications"
-   tar -xzf Soozip-ubuntu24.04-amd64.tar.gz -C "$HOME/Applications"
-   "$HOME/Applications/Soozip/Soozip"
+   tar -xzf Soozip-ubuntu24.04-amd64.tar.gz
+   bash Soozip/install.sh --setup-docker
    ```
 
-   Continue only if the checksum command reports `OK`. Extraction is the app
-   installation; there is no system installer or pip step.
+   Continue only if the archive checksum reports `OK`. The installer checks
+   the extracted application files, copies the complete runtime to
+   `~/.local/share/soozip`, and creates an application-menu entry plus
+   `~/.local/bin/soozip`. It replaces older installations made by this script
+   without mixing runtime files.
+
+   `--setup-docker` is optional: omit it if you manage Docker yourself. If Docker
+   is already accessible, the option makes no Docker changes. Otherwise it asks
+   for sudo authentication, installs Docker Engine from its official repository
+   when needed, enables the service, and adds your account to the `docker` group.
+   This group grants administrator-equivalent access. Log out and back in after
+   group changes. Existing conflicting runtimes or custom Docker repositories
+   are reported for manual review; the script does not remove them.
+
+   Docker setup follows [Docker's Ubuntu installation instructions](https://docs.docker.com/engine/install/ubuntu/)
+   and [non-root access guidance](https://docs.docker.com/engine/install/linux-postinstall/).
+2. Open **Soozip** from Ubuntu's application menu, or run:
+
+   ```bash
+   "$HOME/.local/bin/soozip"
+   ```
+
+   The app itself always runs as your normal user. Do not run `install.sh` or
+   the GUI with sudo; the installer elevates only its optional Docker setup.
 3. Enter package names, for example `git cmake build-essential libssl-dev`, or
    use **Import Package List…** to select a text file. Use names only, without
    version selectors such as `git=...`. Text files allow whitespace-separated
@@ -108,35 +126,47 @@ app; later installations normally need only a new package bundle. Transfer the
 matching offline client when changing to a builder release with a new installer
 version. Keep the destination disconnected while installing packages.
 
-### 2. Verify and extract the app locally
+### 2. Run the offline installation script
 
 Copy the two app files from the transfer medium into `~/Downloads`, then run:
 
 ```bash
 cd "$HOME/Downloads"
 sha256sum -c Gaebal-ubuntu24.04-amd64.tar.gz.sha256
-mkdir -p "$HOME/Applications"
-tar -xzf Gaebal-ubuntu24.04-amd64.tar.gz -C "$HOME/Applications"
+tar -xzf Gaebal-ubuntu24.04-amd64.tar.gz
+bash Gaebal/install.sh
 ```
 
-The checksum must report `OK`. **Gaebal is now installed.** It is a
-portable folder, so no `sudo apt install`, Python setup, Docker setup, or network
-connection is needed. Extract onto a local executable filesystem; USB or shared
-folders mounted with `noexec` cannot run the app directly.
+Continue only if the archive checksum reports `OK`. The script:
 
-Keep the entire `~/Applications/Gaebal/` folder together. The
-expected executable is inside it, not alongside the `.tar.gz` file.
+- Checks Ubuntu version, architecture, standard prerequisites, and application
+  file checksums before replacing an existing installation.
+- Copies the complete runtime to `~/.local/share/gaebal`.
+- Adds **Gaebal** to the application menu and creates `~/.local/bin/gaebal`.
+- Uses only local files: no APT downloads, pip, Docker, or internet access.
 
-### 3. Start the app as your normal desktop user
+**No sudo is needed to install the client.** Administrator authentication is
+requested later, only when you install packages through Gaebal. If a standard
+Ubuntu desktop prerequisite is missing, the script explains which one to prepare
+through your offline provisioning process. It does not try an online fallback.
+
+Run `bash install.sh` even when the transfer medium does not preserve executable
+permissions. The installed application must be on an executable local filesystem;
+installing into a filesystem mounted with `noexec` will not allow the app to run.
+After installation, you can remove the extracted download folder; keep your
+package bundles wherever convenient.
+
+### 3. Start Gaebal
+
+Open **Gaebal** from Ubuntu's application menu, or run:
 
 ```bash
-"$HOME/Applications/Gaebal/Gaebal"
+"$HOME/.local/bin/gaebal"
 ```
 
-Do **not** prefix this command with `sudo`. You can also open the extracted folder
-in Files and launch `Gaebal`; if double-click does not start it, use
-the terminal command to see any startup message. A normal desktop login is
-required for the authentication prompt; an SSH-only shell is not sufficient.
+If `~/.local/bin` is already on your PATH, `gaebal` also works. Otherwise the full
+command above works immediately. A normal graphical desktop login is required
+for the authentication prompt; an SSH-only shell is not sufficient.
 
 ### 4. Review and install a package bundle
 
@@ -163,13 +193,32 @@ to it, it must match; the app also checks internal hashes. Reopening and install
 the same bundle again succeeds without changes when the requested versions are
 already installed. No online repository is used as a fallback.
 
-### Update or remove the portable app
+### Update, customize, or remove an app
 
-Close the app after any installation finishes. For an update, rename the old app
-folder, then extract the new archive into `~/Applications`; do not merge runtime
-files from two releases. Removing the extracted app folder removes the client.
-It does **not** uninstall packages previously installed through it; those remain
-managed by Ubuntu's package manager.
+Close the app after any package installation finishes. To update, extract the
+new archive into a separate download folder and rerun its `install.sh`. The
+installer verifies and stages the new runtime before replacing the old one;
+a failed file publication restores the previous installation. It refuses to
+overwrite unrelated folders, commands, or desktop entries.
+
+The default installation prefix is `~/.local`. Advanced users can choose another
+absolute path with `--prefix /absolute/path`; command launchers go in `bin/`, and
+app files and menu entries go in `share/`. A custom prefix outside the desktop's
+application search paths may require launching the command directly.
+
+To uninstall an app installed with the default settings:
+
+```bash
+bash "$HOME/.local/share/soozip/install.sh" --uninstall
+bash "$HOME/.local/share/gaebal/install.sh" --uninstall
+```
+
+For a custom prefix, pass the same `--prefix` when updating or uninstalling.
+Uninstallation removes only the managed app, command launcher, and menu entry.
+It does not uninstall Docker or Ubuntu packages previously installed with Gaebal.
+
+Portable use is still supported: run `./Soozip/Soozip` or `./Gaebal/Gaebal`
+directly from the extracted folder. Keep that folder intact in this mode.
 
 ## Project layout
 
@@ -178,14 +227,16 @@ Each client has a separate top-level folder and its own UI module and launcher:
 ```text
 Soozip/
 ├── Soozip                 # Launch Soozip from the source checkout
+├── install.sh             # Installer entry point copied into the release
 ├── main.py                # Portable application entry point
 └── src/soozip/            # Online builder UI
 Gaebal/
 ├── Gaebal                 # Launch Gaebal from the source checkout
+├── install.sh             # Installer entry point copied into the release
 ├── main.py                # Portable application entry point
 └── src/gaebal/            # Offline installer UI
 src/offline_apt_builder/   # Shared package engine and GUI worker/base controls
-packaging/                # Shared portable-build configuration
+packaging/                # Shared app installer, optional Docker setup, build config
 scripts/build_clients.py  # Build both portable clients
 dist/Soozip/              # Complete portable Soozip application
 dist/Gaebal/              # Complete portable Gaebal application
@@ -193,7 +244,8 @@ dist/Gaebal/              # Complete portable Gaebal application
 
 Source clients use the shared engine in this repository. To transfer an app to
 another machine, use its complete portable archive from `dist/`, not its source
-folder. The installable Python distribution is `soozip-gaebal`; its GUI commands
+folder. The source checkout installer reports that a portable build is needed;
+build the clients first to create the complete installable payload. The installable Python distribution is `soozip-gaebal`; its GUI commands
 are `soozip` and `gaebal`. The shared advanced CLI remains `offline-apt-builder`.
 
 ## Developer setup (not required for portable app users)
