@@ -55,6 +55,7 @@ def main(argv=None):
             if 'archive' in request and bundle.name != 'offline-' + kind:
                 raise ValueError('Bundle root and manifest type disagree')
             emit('bundle', manifest=manifest, bundle=str(bundle), integrity='Verified',
+                 validation=(json.loads((bundle / 'test-report.json').read_text()) if kind == 'apt' else None),
                  interpreters=discover_interpreters(manifest['target']['python_version']) if kind == 'pip' and args.operation == 'inspect' else [])
             if args.operation == 'inspect':
                 emit('result', status='VERIFIED')

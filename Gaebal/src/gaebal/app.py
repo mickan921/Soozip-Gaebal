@@ -25,6 +25,7 @@ class GaebalWindow(BaseWindow):
         self.summary = QLabel('No bundle selected')
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setWordWrap(True)
+        self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.layout.addWidget(self.summary)
         self.pip_controls = QWidget()
         pip_layout = QVBoxLayout(self.pip_controls)
@@ -164,6 +165,15 @@ class GaebalWindow(BaseWindow):
             self.kind = m.get('bundle_type', 'apt')
             target = f" • CPython {m['target']['python_version']}" if self.kind == 'pip' else ''
             self.summary.setText(f"Build: {m.get('build_id', 'unknown')} • {self.kind.upper()}{target} • VALIDATED • Integrity verified\nRequested: {', '.join(m['requested'])}")
+            if self.kind == 'apt':
+                scenarios = (event.get('validation') or {}).get('scenarios', [])
+                coverage = 'Legacy coverage: clean Ubuntu installation.'
+                if m.get('validation_policy'):
+                    count = sum(s['kind'] == 'installation' for s in scenarios)
+                    coverage = f'Coverage: {count} offline installation tests; {len(scenarios) - count} desktop dependency simulations.'
+                self.summary.setText(self.summary.text() + '\n' + coverage)
+                for scenario in scenarios:
+                    self.logs.appendPlainText(f"Validation: {scenario.get('label', scenario['id'])} — {scenario['kind']} — {scenario['status']}")
             self.pip_controls.setVisible(self.kind == 'pip')
             if self.kind == 'pip' and self.operation == 'inspect':
                 self.environment_mode.setCurrentIndex(0)

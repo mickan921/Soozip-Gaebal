@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from offline_apt_builder.build import build, check_host
 from offline_apt_builder.cli import main
+from validation_support import plan_fixture, MARKERS
 from offline_apt_builder.inputs import read_packages, validate_packages
 from offline_apt_builder.models import BuildError, BuildRequest, BuildResult
 from offline_apt_builder.packaging import package_bundle, publish_file
@@ -216,6 +217,7 @@ class ValidatorTests(unittest.TestCase):
                     if "{{.State.ExitCode}}" in args: return "17\n"
                     return "maintainer script failed\n" if "start" in args else ""
             report_path = Path(temp) / "test-report.json"
+            plan_fixture(Path(temp))
             with self.assertRaisesRegex(BuildError, "exit 17"):
                 validate(FakeRunner(), Path(temp), "sha256:test", "test", [], report_path)
             self.assertEqual(json.loads(report_path.read_text())["status"], "FAILED")
@@ -227,8 +229,9 @@ class ValidatorTests(unittest.TestCase):
                 def run(self, args, **kwargs):
                     if "{{.HostConfig.NetworkMode}}" in args: return "none\n"
                     if "{{.State.ExitCode}}" in args: return "0\n"
-                    return "SUCCESS: requested packages and providers installed; APT dependency check passed.\n"
-            with self.assertRaisesRegex(BuildError, "every requested"):
+                    return MARKERS
+            plan_fixture(Path(temp))
+            with self.assertRaisesRegex(BuildError, "Requested versions"):
                 validate(FakeRunner(), Path(temp), "sha256:test", "test", [{"name": "provider", "version": "1"}], Path(temp) / "test-report.json")
 
 
@@ -286,11 +289,13 @@ class CliAndBuildTests(unittest.TestCase):
                     if args[1] == "run":
                         work = Path(args[args.index("--volume") + 1].removesuffix(":/work"))
                         manifest = repository_fixture(work / "offline-apt")
+                        manifest['repositories'] = {'release_metadata': []}
+                        plan_fixture(work / 'offline-apt')
                         write_json(work / "offline-apt/manifest.json", manifest)
                     if "{{.HostConfig.NetworkMode}}" in args: return "none\n"
                     if "{{.State.ExitCode}}" in args: return "17\n" if status == "FAILED" else "0\n"
                     if args[1] == "start":
-                        return "INSTALLED\texample\t1\nSUCCESS: requested packages and providers installed; APT dependency check passed.\n"
+                        return "INSTALLED\texample\t1\n" + MARKERS
                     return ""
                 request = BuildRequest(("example",), output, skip_test=status == "UNTESTED")
                 with patch("offline_apt_builder.build.check_host"), patch.object(Runner, "run", fake_run):

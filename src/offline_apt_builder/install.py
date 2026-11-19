@@ -67,6 +67,8 @@ def verify_bundle(bundle: Path) -> dict:
         raise BuildError('Only amd64 bundles are supported.')
     trusted_installer(bundle)
     verify_repository(bundle, manifest)
+    from .validator import verify_evidence
+    verify_evidence(bundle, manifest, report)
     return manifest
 
 

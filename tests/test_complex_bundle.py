@@ -26,7 +26,7 @@ from offline_apt_builder.install import verify_bundle
 from offline_apt_builder.packaging import package_bundle
 from offline_apt_builder.repository import write_checksums, write_json
 from offline_apt_builder.runner import Runner
-from offline_apt_builder.validator import validate
+from validation_support import validate_fixture as validate
 import test_integration as integration
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,7 +73,7 @@ class ComplexBundleTests(unittest.TestCase):
         runner = Runner(cls.evidence / 'validation-build.log')
         try:
             report = validate(runner, bundle, cls.base, container, manifest['selections'],
-                              cls.evidence / 'validation-report.json')
+                              cls.evidence / 'validation-report.json', keep_container=True)
             integration.docker('cp', container + ':/var/log/offline-complex-order.log',
                                str(cls.evidence / 'fresh-install-order.log'))
         finally:

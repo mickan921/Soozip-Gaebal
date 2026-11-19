@@ -21,6 +21,21 @@ URL = 'https://www.7-zip.org/a/7z2501-linux-x64.tar.xz'
 DIGEST = '4ca3b7c6f2f67866b92622818b58233dc70367be2f36b498eb0bdeaaa44b53f4'
 
 
+def source_fingerprint():
+    """Bind portable clients and release checks to the same source tree."""
+    paths = [ROOT / name for name in ('README.md', 'pyproject.toml', 'make-offline-apt.sh')]
+    for name in ('src', 'Soozip', 'Gaebal', 'scripts', 'tests', 'packaging'):
+        paths.extend(path for path in (ROOT / name).rglob('*') if path.is_file()
+                     and not any(part in {'__pycache__', '.pytest_cache'} or part.endswith(('.egg-info', '.dist-info'))
+                                 for part in path.parts)
+                     and path.suffix not in {'.pyc', '.pyo'})
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(path.relative_to(ROOT).as_posix().encode() + b'\0')
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def verify_runtime(folder):
     internal = folder / '_internal'
     if not (internal / 'libxcb-cursor.so.0').is_file():
@@ -42,6 +57,7 @@ def verify_runtime(folder):
 
 
 def main():
+    source_sha256 = source_fingerprint()
     release = platform.freedesktop_os_release() if sys.platform.startswith('linux') else {}
     if release.get('ID') != 'ubuntu' or release.get('VERSION_ID') != '24.04' or platform.machine() != 'x86_64':
         raise SystemExit('Release clients must be built on Ubuntu 24.04 amd64.')
@@ -107,6 +123,7 @@ def main():
         project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']
         (folder / 'release.json').write_text(json.dumps({'application': folder.name,
             'version': project['version'], 'built_utc': datetime.now(timezone.utc).isoformat(),
+            'source_sha256': source_sha256,
             'platform': 'Ubuntu 24.04 amd64', '7zip': VERSION,
             '7zip_source_sha256': DIGEST, 'dependencies': (ROOT / 'packaging/requirements-release.txt').read_text().splitlines()}, indent=2))
         checksums = []
@@ -126,6 +143,8 @@ def main():
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
         Path(str(destination) + '.sha256').write_text(f'{digest}  {destination.name}\n')
         print(destination)
+    if source_fingerprint() != source_sha256:
+        raise SystemExit('Source changed during the portable build. Rebuild before releasing these clients.')
 
 
 if __name__ == '__main__':

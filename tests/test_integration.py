@@ -210,6 +210,32 @@ sha256sum --check /tmp/after
         self.assertIn('PLAN\toffline-choice-two\tkeep\t1\t1', output)
         self.assertNotIn('Remv ', output)
 
+    def test_matrix_exposes_legacy_failure_that_clean_install_misses(self):
+        self.run_matrix_fixture('choice-legacy', seeded=False, succeeds=True)
+        self.run_matrix_fixture('choice-legacy', seeded=True, succeeds=False)
+
+    def test_matrix_installs_compatible_provider_and_repeats(self):
+        self.run_matrix_fixture('choice', seeded=True, succeeds=True)
+
+    def test_matrix_missing_alternative_rejects_unchanged_preview(self):
+        self.run_matrix_fixture('choice-missing', seeded=True, succeeds=False)
+
+    def run_matrix_fixture(self, bundle, seeded, succeeds):
+        script = 'set -eu\n'
+        if seeded:
+            script += 'dpkg -i /fixtures/pool/offline-choice-two_1_all.deb\napt-mark auto offline-choice-two\n'
+        script += 'bash /scenario installation\n'
+        result = docker('run', '--rm', '--pull', 'never', '--network', 'none',
+                        '--volume', f'{self.workspace}:/fixtures:ro',
+                        '--volume', f'{self.workspace / bundle}:/bundle:ro',
+                        '--volume', f'{ROOT}/src/offline_apt_builder/resources/validate-scenario.sh:/scenario:ro',
+                        self.base, 'bash', '-c', script, check=False)
+        self.assertEqual(result.returncode == 0, succeeds, result.stdout[-6000:])
+        self.assertIn('VALIDATION_PREVIEW_UNCHANGED', result.stdout)
+        if succeeds:
+            self.assertIn('VALIDATION_REPEAT_UNCHANGED', result.stdout)
+        else:
+            self.assertNotIn('VALIDATION_SCENARIO_OK', result.stdout)
     def test_retained_provider_upgrades_need_approval(self):
         setup = 'dpkg -i /fixtures/pool/offline-choice-two_1_all.deb; sha256sum /var/lib/dpkg/status > /tmp/before'
         output = self.install(bundle='choice-upgrade', setup=setup, flags='--yes', expected=1,

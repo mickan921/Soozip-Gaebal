@@ -90,6 +90,21 @@ class DesktopTests(unittest.TestCase):
             self.assertTrue(window.version_label.isVisible())
             window.close()
 
+    def test_validation_coverage_is_visible_without_enabling_installation(self):
+        window = GaebalWindow()
+        event = {'type': 'bundle', 'bundle': '/fixture', 'manifest': {'requested': ['example']}}
+        window.on_event(event)
+        self.assertIn('Legacy coverage', window.summary.text())
+        event['manifest']['validation_policy'] = 'ubuntu-desktop-providers-v1'
+        event['validation'] = {'scenarios': [
+            {'id': 'fresh', 'kind': 'installation', 'status': 'PASSED'},
+            {'id': 'desktop-release', 'kind': 'dependency-simulation', 'status': 'PASSED'}]}
+        window.on_event(event)
+        self.assertIn('1 offline installation tests; 1 desktop dependency simulations', window.summary.text())
+        self.assertIn('desktop-release', window.logs.toPlainText())
+        self.assertFalse(window.install_button.isEnabled())
+        window.close()
+
     def test_removal_failure_immediately_clears_stale_approvals(self):
         from offline_apt_builder.install import removal_summary
         from PySide6.QtCore import Qt

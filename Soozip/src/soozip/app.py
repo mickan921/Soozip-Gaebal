@@ -38,7 +38,8 @@ class SoozipWindow(BaseWindow):
         self.recommends = QCheckBox('Include recommended packages')
         self.layout.addWidget(self.recommends)
         self.compatibility_note = QLabel('Matching system compatibility packages are included automatically. '
-                                        'Gaebal installs only what the reviewed transaction needs.')
+                                        'Required tests cover fresh Ubuntu, older libraries, desktop dependencies and alternative providers. '
+                                        'Testing uses temporary containers and can take substantial time and disk space.')
         self.compatibility_note.setWordWrap(True)
         self.layout.addWidget(self.compatibility_note)
         self.build_button = QPushButton('Build and Validate Bundle')

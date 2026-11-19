@@ -246,7 +246,7 @@ packages. Do not disable removal protection or manually uninstall desktop
 packages to make the bundle fit. Genuine package conflicts, holds, or unsupported
 vendor versions may still need local diagnosis.
 
-Gaebal 0.5.2 accepts current APT bundles and the exact known installer shipped in
+Gaebal 0.5.3 accepts current APT bundles and the exact known installer shipped in
 0.4.2–0.5.1 bundles. It verifies the original archive, checksums and validation
 evidence without rewriting them, then uses its own updated installer for the
 fresh local preview and installation. Updating Gaebal alone therefore fixes the
@@ -620,20 +620,28 @@ offline-apt/
 
 - Only official Ubuntu `noble`, `noble-updates`, and `noble-security` repositories are used, with main, restricted, universe, and multiverse. Host repository settings are never imported.
 - APT resolves against a real empty status database and isolated lists/caches. Dependencies already present in either the workstation or tooling container are still downloaded. APT handles dependencies, pre-dependencies, and alternatives.
-- Compatibility expansion follows same-source exact `Depends`/`Pre-Depends` links and each companion's forward dependency closure. Companions are resolved separately, so conflicting alternatives can coexist in the repository without being installed together. Conflicting versions of the same binary package fail the build.
+- Compatibility expansion follows alternative providers in the requested dependency graph, then same-source exact `Depends`/`Pre-Depends` companions. Companions are resolved separately, so conflicting alternatives can coexist in the repository without being installed together. Conflicting versions of the same binary package fail the build.
 - Downloaded package sizes and SHA-256 hashes are checked against authenticated Ubuntu indexes. The generated repository is checked independently against its manifest and compressed indexes.
 - Manifest schema version 2 records requested names, selected concrete packages/providers and exact versions, package metadata, repository release files/hashes, image identifiers, tool version, and UTC build time. Metadata ordering is stable; changing upstream repositories means future builds need not be byte-identical.
 - New APT manifests optionally record each binary's source name/version and inclusion reasons, plus the compatibility package count and bytes. Older schema-2 manifests remain supported.
-- The tooling image derives from an immutable repository digest. Validation uses the original, fresh Ubuntu base by its immutable local image ID, without tooling additions or image pulls during testing.
+- The tooling image derives from an immutable repository digest. Installation tests use the fresh Ubuntu base and prepared reference environments by immutable local image IDs, without image pulls during testing.
 - Installer configuration is loaded through `APT_CONFIG` before system APT configuration fragments. Sources, lists, caches, and logs are temporary; only local `file`, `copy`, and `store` acquisition handlers are available. Target installed state, holds, and preferences remain visible. No unsafe package-manager force flags are added.
-- **VALIDATED** means the exact shipped installer succeeded with a read-only bundle and Docker `--network none`, verified requested concrete packages/providers, and passed `apt-get check`. The container's network setting and exit code are checked explicitly. Reports and descriptive status are finalized afterward; the tested installation payload is checked for changes before packaging.
+- **VALIDATED** requires fresh Ubuntu installation, an older systemd/Mesa/ALSA/Xorg installation, original-release and current desktop dependency simulations, and installation into discovered provider states (including runtime-only states). Each runs the shipped installer against a read-only bundle with Docker `--network none`. Real installations verify requested versions, unchanged previews, no removals, automatic/manual flags, `apt-get check`, `dpkg --audit`, and unchanged repeat installation. Required failures or unavailable references block packaging. Reports distinguish actual installs from dependency simulations and record reference image/definition hashes. The tested payload is frozen before validation and checked again before packaging.
 - **UNTESTED** means `--skip-test` was used. **FAILED** builds preserve diagnostics and produce no completed archive. Finished archive/checksum files are published atomically without overwriting existing files; the checksum is published last. The builder completes publication only after both files are written. The desktop importer also accepts the archive alone and checks all internal hashes.
 
 The local repository uses `trusted=yes` after bundle checksum verification. SHA-256 detects corruption; it is not an authenticity guarantee if an attacker can replace both an archive and its checksum. Protect the transfer through your approved process. Manifest signing is deferred.
 
-Clean-container validation is a smoke/integration test, not proof of compatibility with an unknown target's held or vendor packages, policy, kernel, hardware, or installed versions. Kernel/DKMS/NVIDIA/CUDA and maintainer scripts requiring devices, systemd, or internet are outside guaranteed container validation. Packages can have network-using maintainer scripts: local-only APT acquisition does not sandbox every process those scripts execute. The target must remain air-gapped; full networking is disabled during the container test.
+Compatibility validation tests representative package states, not every possible combination. It does not prove compatibility with an unknown target's held or vendor packages, policy, kernel, hardware, or installed versions. Kernel/DKMS/NVIDIA/CUDA and maintainer scripts requiring devices, systemd, or internet are outside guaranteed container validation. Packages can have network-using maintainer scripts: local-only APT acquisition does not sandbox every process those scripts execute. The target must remain air-gapped; full networking is disabled during the container test.
 
 There is no rollback of package maintainer scripts or completed package changes after installation begins. A failure can leave packages unpacked or partially configured. Inspect diagnostics locally and resolve the cause using approved packages; do not enable online sources as an automatic fallback.
+
+### Validation environments and cleanup
+
+Tests run inside Docker on the online computer. Reference package states come from authenticated Ubuntu metadata; neither computer's installed inventory is imported. Desktop models exercise APT dependencies without claiming to boot a desktop. Provider families are tested independently, not in every possible combination. Gaebal still previews the actual offline destination.
+
+Temporary test containers are removed on completion, handled failure and cancellation. Build workspaces are removed unless `--keep-workdir` is explicitly set. Finished bundles, logs and reports remain. Ubuntu base images and prepared older-core images are cached; the latter use `soozip-validation-core` tags keyed by the base image, profile and authenticated index hashes. Cached images consume disk space and can be removed through Docker when no build is running. Abrupt power loss or forced termination can leave temporary resources requiring manual cleanup.
+
+Schema-2 bundles declare the optional `ubuntu-desktop-providers-v1` validation policy, with a checksummed `validation-plan.json`, desktop reference states and per-scenario evidence in `test-report.json`. Gaebal verifies all declared scenarios and displays coverage. Known older bundles remain supported with their legacy clean-container coverage labeled explicitly. Pip validation is unchanged.
 
 ## Tests and release acceptance
 
@@ -700,6 +708,18 @@ Confirm the offline VM has no separately installed Python packages, Docker, or
 caused by changing target package state before installation.
 
 ### Validation status for this release
+
+Version 0.5.3 makes compatibility validation mandatory in ordinary Soozip APT builds. New bundles include relevant alternative providers and record the required installation and desktop dependency scenarios. Gaebal displays this coverage while preserving the 0.5.2 provider-retention behavior and support for known legacy bundles. The SDL and JACK2 preparation downloads have been retired; existing local SDL copies remain usable.
+
+The APT release gate below requires the completed current-policy SDL matrix and current portable clients. It fails on missing matrix evidence, failing tests, or skipped required suites:
+
+```bash
+python scripts/check_apt_release.py --sdl-bundle /path/to/current/offline-apt \
+  --legacy-sdl-bundle /path/to/original/offline-apt \
+  --smoke-archive /path/to/current-small-bundle.7z --report build/apt-release-check.json
+```
+
+The following paragraphs record earlier release behavior and validation:
 
 Version 0.5.2 retries removal-blocked APT plans while retaining installed
 packages, including the JACK2 runtime. Compatible development dependencies are

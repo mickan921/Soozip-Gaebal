@@ -94,7 +94,9 @@ def main():
     # Import only after APT_CONFIG is set: importing apt initializes libapt.
     import apt
     import apt_pkg
-    from apt_compatibility import PackageVersion, expand_companions, parse_simulation
+    from apt_compatibility import (PackageVersion, expand_companions, expand_alternatives,
+                                   native_provider_choices, parse_simulation)
+    from validation_plan import create_plan, version_for
 
     apt_pkg.init()
     cache = apt.Cache()
@@ -119,16 +121,29 @@ def main():
                                    version.source_name, version.source_version, version.size, tuple(sorted(set(exact))))
             available[(value.name, value.version)] = value
 
-    def resolve_targets(values):
+    def resolve_targets(values, options=(), exact=True):
         # APT simulation against the empty status database includes every package,
         # including dependencies already installed in the tooling image.
-        plan = run(['apt-get', '--simulate', '--no-remove', 'install', *values],
+        plan = run(['apt-get', '--simulate', '--no-remove', *options, 'install', *values],
                    stdout=subprocess.PIPE, text=True).stdout
-        return parse_simulation(plan, values, available)
+        return parse_simulation(plan, values if exact else [], available)
+
+    def alternatives(package):
+        version = version_for(cache, package)
+        for group in version.get_dependencies('Depends', 'PreDepends'):
+            yield native_provider_choices(group.target_versions, available, apt_pkg.version_compare)
 
     initial = resolve_targets(targets)
-    resolved, reasons = expand_companions(initial, available.values(),
+    expanded, alternative_reasons, providers = expand_alternatives(initial, alternatives,
                                          lambda peer: resolve_targets([f'{peer.name}={peer.version}']))
+    resolved, reasons = expand_companions(expanded, available.values(),
+                                         lambda peer: resolve_targets([f'{peer.name}={peer.version}']))
+    for name, values in alternative_reasons.items():
+        reasons[name] = sorted(set(reasons[name]) | set(values))
+    if not request.get('skip_test', False):
+        validation = create_plan(bundle, cache, providers, resolve_targets)
+        (bundle / 'validation-plan.json').write_text(json.dumps(validation, indent=2, sort_keys=True) + '\n')
+        print(f'Prepared {len(validation["scenarios"])} required compatibility scenarios.', flush=True)
     required = sum(p.size_bytes for p in resolved)
     compatibility_bytes = required - sum(p.size_bytes for p in initial)
     print('OFFLINE_APT_COMPATIBILITY_BYTES=' + str(compatibility_bytes), flush=True)
@@ -186,7 +201,7 @@ def main():
         raise ValueError("Expected authenticated release metadata for noble, noble-updates, and noble-security")
     manifest = {"schema_version": 1, "requested": names, "architecture": "amd64", "ubuntu_release": "24.04",
                 "with_recommends": request["with_recommends"], "selections": selections, "packages": packages,
-                "compatibility": {"strategy": "same-source-exact-dependencies-v1",
+                "compatibility": {"strategy": "companions-and-alternative-providers-v2",
                                   "package_count": len(resolved) - len(initial),
                                   "size_bytes": compatibility_bytes},
                 "repositories": {"suites": ["noble", "noble-updates", "noble-security"],

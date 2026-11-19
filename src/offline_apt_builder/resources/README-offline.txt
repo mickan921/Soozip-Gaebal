@@ -33,8 +33,10 @@ sufficient free disk space. It supports read-only bundles and paths with spaces.
 It uses a temporary file repository and does not edit permanent APT sources.
 It retains failure diagnostics locally in /tmp/offline-apt-log.*/install.log.
 
-VALIDATED means the shipped installer passed in a fresh Ubuntu container with
-networking disabled. UNTESTED means that test was explicitly skipped. Neither
+VALIDATED requires offline installation tests on fresh Ubuntu, older system
+libraries and discovered provider states, plus desktop dependency simulations.
+test-report.json lists each scenario and its test type. Desktop simulations do
+not boot a graphical desktop. UNTESTED means validation was skipped. Neither
 status guarantees compatibility with a modified target, vendor packages, kernel
 modules, hardware, or maintainer scripts needing network/systemd/devices.
 

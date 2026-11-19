@@ -108,14 +108,15 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
         context = work / "container-context"
         context.mkdir()
         resources = files("offline_apt_builder").joinpath("resources")
-        for name in ("Dockerfile.builder", "resolve.py", "apt_compatibility.py", "ubuntu.sources"):
+        for name in ("Dockerfile.builder", "resolve.py", "apt_compatibility.py", "validation_plan.py", "ubuntu.sources"):
             (context / name).write_bytes(resources.joinpath(name).read_bytes())
         (bundle / "install.sh").write_bytes(resources.joinpath("install.sh").read_bytes())
         (bundle / "install.sh").chmod(0o755)
         (bundle / "packages.txt").write_text("\n".join(packages) + "\n")
         (bundle / "architecture.txt").write_text("amd64\n")
         (bundle / "with-recommends.txt").write_text(f"{int(request.with_recommends)}\n")
-        write_json(work / "request.json", {"packages": packages, "with_recommends": request.with_recommends})
+        write_json(work / "request.json", {"packages": packages, "with_recommends": request.with_recommends,
+                                           "skip_test": request.skip_test})
         event("prepare", "Pulling the Ubuntu amd64 base and preparing APT tooling.")
         runner.run(["docker", "pull", "--platform", "linux/amd64", "ubuntu:24.04"])
         image = json.loads(runner.run(["docker", "image", "inspect", "--format",
@@ -160,6 +161,8 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
             raise BuildError("Resolver manifest does not match the requested packages.")
         manifest.update(schema_version=2, build_id=build_id, created_utc=created.isoformat(), tool_version=__version__,
                         base_image=report["base_image"], tooling_image=tooling_id, validation_status="PENDING")
+        if not request.skip_test:
+            manifest['validation_policy'] = 'ubuntu-desktop-providers-v1'
         event("index", "Independently verifying repository indexes, manifests, and hashes.")
         verify_repository(bundle, manifest)
         write_json(bundle / "manifest.json", manifest)
@@ -170,15 +173,15 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
         # Freeze the installer and install payload before testing. Only reports,
         # checksums, and descriptive status metadata are finalized afterward.
         frozen = {p.relative_to(bundle).as_posix(): sha256(p) for p in bundle.rglob("*")
-                  if p.is_file() and (p.parent == bundle / "repo" or p.name in {"install.sh", "install-targets.txt", "packages.txt", "architecture.txt", "with-recommends.txt"})}
+                  if p.is_file() and (p.parent in {bundle / "repo", bundle / 'validation-references'} or p.name in {"install.sh", "install-targets.txt", "packages.txt", "architecture.txt", "with-recommends.txt", "validation-plan.json"})}
         if request.skip_test:
             event("test", "UNTESTED: offline validation was explicitly skipped.")
             test_report = {"status": "UNTESTED", "reason": "--skip-test", "dependency_check": False}
         else:
-            event("test", "Running the shipped installer read-only in a fresh container with network=none.")
+            event("test", "Testing fresh Ubuntu, older libraries, desktop dependencies and alternative providers offline.")
             validator_container = "offline-apt-test-" + build_id
-            containers.append(validator_container)
-            test_report = validate(runner, bundle, base_image, validator_container, manifest["selections"], work / "test-report.json")
+            test_report = validate(runner, bundle, base_image, validator_container, manifest["selections"], work / "test-report.json",
+                                   progress=lambda message: event('test', message))
         status = test_report["status"]
         report.update(status=status, test=test_report, package_count=len(manifest["packages"]))
         if 'compatibility' in manifest:

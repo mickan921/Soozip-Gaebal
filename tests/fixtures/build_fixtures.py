@@ -107,6 +107,9 @@ choice_dev_two = deb('offline-choice-dev-two', extra='Depends: offline-choice-tw
 choice_dev_two_new = deb('offline-choice-dev-two', '2', extra='Depends: offline-choice-two (= 2)\nProvides: offline-choice-dev-one\nConflicts: offline-choice-dev-one\n')
 choice_tool = deb('offline-choice-tool', extra='Depends: offline-choice-dev-one | offline-choice-dev-two\n')
 bundle('choice', 'offline-choice-tool=1', [choice_one, choice_two, choice_dev_one, choice_dev_two, choice_tool])
+bundle('choice-legacy', 'offline-choice-tool=1', [choice_one, choice_two, choice_dev_one, choice_dev_two, choice_tool])
+(ROOT / 'choice-legacy/install.sh').write_bytes(Path(__file__).with_name('install-v0.5.1.sh').read_bytes())
+write_checksums(ROOT / 'choice-legacy')
 bundle('choice-upgrade', 'offline-choice-tool=1', [choice_one, choice_two_new, choice_dev_one, choice_dev_two_new, choice_tool])
 bundle('choice-missing', 'offline-choice-tool=1', [choice_one, choice_dev_one, choice_tool])
 

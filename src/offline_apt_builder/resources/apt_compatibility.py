@@ -83,3 +83,69 @@ include mutually exclusive options; they are never one forced transaction.
                         f'dependency of compatibility package {peer.name}={peer.version}')
     return (tuple(selected[name] for name in sorted(selected)),
             {name: sorted(reasons[name]) for name in sorted(selected)})
+
+
+def expand_alternatives(initial, alternatives, resolve):
+    """Follow alternative branches of the requested graph, independently.
+
+    The callback uses libapt's versioned/virtual dependency matching. Companion
+    packages are deliberately expanded later: an optional companion's unrelated
+    alternatives must not turn every small request into the entire archive.
+    """
+    selected = {}
+    reasons = defaultdict(set)
+    pending = deque()
+    providers = {}
+
+    def include(package, reason):
+        previous = selected.get(package.name)
+        if previous is not None and previous != package:
+            raise ValueError(f'Alternative resolution requires conflicting versions of {package.name}: '
+                             f'{previous.version} and {package.version}.')
+        reasons[package.name].add(reason)
+        if previous is None:
+            selected[package.name] = package
+            pending.append(package)
+
+    for package in initial:
+        include(package, 'requested package or dependency')
+    while pending:
+        parent = pending.popleft()
+        for group in alternatives(parent):
+            choices = {p.name: p for p in group}
+            if len(choices) < 2:
+                continue
+            for peer in sorted(choices.values(), key=lambda p: p.name):
+                providers[peer.name] = peer
+                reason = f'alternative provider for a dependency of {parent.name}={parent.version}'
+                if peer.name in selected:
+                    include(peer, reason)
+                    continue
+                closure = tuple(resolve(peer))
+                if peer not in closure:
+                    raise ValueError(f'APT omitted alternative provider {peer.name}={peer.version}')
+                for dependency in closure:
+                    include(dependency, reason)
+    return (tuple(selected[name] for name in sorted(selected)),
+            {name: sorted(values) for name, values in reasons.items()},
+            tuple(providers[name] for name in sorted(providers)))
+
+
+def native_provider_choices(matching_versions, available, compare):
+    """Choose one native version per provider from libapt's matching targets.
+
+    libapt performs versioned virtual-Provides matching before this function.
+    Prefer its candidate when allowed by the dependency, otherwise the highest
+    matching version. Never replace an allowed candidate due to iteration order.
+    """
+    choices = {}
+    for target in matching_versions:
+        name = target.package.name
+        if ':' in name or (name, target.version) not in available:
+            continue
+        previous = choices.get(name)
+        candidate = target.package.candidate
+        if (previous is None or target == candidate or
+                (previous != candidate and compare(target.version, previous.version) > 0)):
+            choices[name] = target
+    return tuple(available[(name, value.version)] for name, value in sorted(choices.items()))
