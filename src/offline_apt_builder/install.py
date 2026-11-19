@@ -13,6 +13,18 @@ from .archive import inventory
 from .models import BuildError, InstallPlan, PackageAction
 from .repository import sha256, verify_repository
 
+# Exact shipped installer from APT releases 0.4.2 through 0.5.1. A known legacy
+# payload remains immutable and verified; Gaebal executes its own current engine.
+LEGACY_INSTALLER_SHA256 = frozenset({'fb48d821af67ecb277e8598a1929f8545d5c0e4aa2509d68cc0533aff7c03f94'})
+
+
+def trusted_installer(bundle: Path) -> Path:
+    current = Path(str(files('offline_apt_builder').joinpath('resources/install.sh')))
+    embedded = bundle / 'install.sh'
+    if embedded.read_bytes() != current.read_bytes() and sha256(embedded) not in LEGACY_INSTALLER_SHA256:
+        raise BuildError('Installer version does not match this client; transfer the matching offline client.')
+    return current
+
 
 def verify_bundle(bundle: Path) -> dict:
     actual = inventory(bundle)
@@ -53,8 +65,7 @@ def verify_bundle(bundle: Path) -> dict:
         raise BuildError('Bundle validation evidence is incomplete or inconsistent.')
     if (bundle / 'architecture.txt').read_text().strip() != 'amd64':
         raise BuildError('Only amd64 bundles are supported.')
-    if (bundle / 'install.sh').read_bytes() != files('offline_apt_builder').joinpath('resources/install.sh').read_bytes():
-        raise BuildError('Installer version does not match this client; transfer the matching offline client.')
+    trusted_installer(bundle)
     verify_repository(bundle, manifest)
     return manifest
 
@@ -98,7 +109,8 @@ def removal_summary(diagnostics: dict) -> str:
 def run_installer(bundle: Path, arguments: list[str], emit) -> str:
     # Never inherit caller APT, Bash startup, or dynamic-library configuration.
     env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'HOME': '/root' if os.geteuid() == 0 else str(Path.home())}
-    process = subprocess.Popen(['/bin/bash', str(bundle / 'install.sh'), *arguments], env=env,
+    installer = trusted_installer(bundle)
+    process = subprocess.Popen(['/bin/bash', str(installer), '--bundle-root=' + str(bundle.resolve()), *arguments], env=env,
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True)
     output = []

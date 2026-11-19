@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from offline_apt_builder.archive import extract_archive, parse_listing, verify_sidecar, run7
-from offline_apt_builder.install import install, preview, verify_bundle
+from offline_apt_builder.install import install, preview, verify_bundle, trusted_installer
 from offline_apt_builder.models import BuildError, InstallPlan, PackageAction
 from offline_apt_builder.packaging import package_bundle
 from offline_apt_builder.repository import write_checksums, write_json
@@ -127,6 +127,25 @@ class TransportTests(unittest.TestCase):
                 plan = preview(root, lambda *a, **kw: None)
             self.assertEqual(plan.actions[0], PackageAction('example', 'upgrade', '0', '1'))
             self.assertEqual(plan.approval_token, 'a'*64)
+
+    def test_known_legacy_bundle_is_verified_without_rewriting_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            valid_bundle(root)
+            legacy = Path(__file__).parent / 'fixtures/install-v0.5.1.sh'
+            (root / 'install.sh').write_bytes(legacy.read_bytes())
+            write_checksums(root)
+            before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            verify_bundle(root)
+            engine = trusted_installer(root)
+            self.assertNotEqual(engine, root / 'install.sh')
+            self.assertEqual(engine.read_bytes(), files('offline_apt_builder').joinpath('resources/install.sh').read_bytes())
+            self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()})
+            # Recomputing checksums cannot authorize a modified legacy script.
+            (root / 'install.sh').write_text(legacy.read_text() + '\necho changed\n')
+            write_checksums(root)
+            with self.assertRaisesRegex(BuildError, 'Installer version'):
+                verify_bundle(root)
 
     def test_stale_approval_never_runs_install(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -31,6 +31,13 @@ repository options, not extra installation targets. Gaebal installs only what
 APT needs for the reviewed transaction, with the usual version-change approvals.
 No machine inventory needs to leave the offline network.
 
+The installer also preserves installed dependency providers automatically. If an
+initial APT plan would remove a package, it retries while requiring that package
+to stay installed. For example, a desktop with JACK2 can install the SDL development
+packages using the bundled JACK2 development provider in the same transaction.
+No preparation bundle is needed. The final plan must still contain zero removals;
+holds, pinning, and version-change approvals remain enforced.
+
 Two native PySide6 desktop clients and the Python CLI share the build and installation engines. macOS, arm64, cross builds, PPAs, and vendor repositories are unsupported.
 
 Both clients display their application version in the bottom-right corner.
@@ -239,9 +246,13 @@ packages. Do not disable removal protection or manually uninstall desktop
 packages to make the bundle fit. Genuine package conflicts, holds, or unsupported
 vendor versions may still need local diagnosis.
 
-The 0.5.1 clients continue to accept APT bundles using the unchanged 0.4.2 installer.
-Pip bundles require 0.5.0 and a matching pip installer; transfer matching clients
-when upgrading installer versions. Older APT installers remain incompatible.
+Gaebal 0.5.2 accepts current APT bundles and the exact known installer shipped in
+0.4.2–0.5.1 bundles. It verifies the original archive, checksums and validation
+evidence without rewriting them, then uses its own updated installer for the
+fresh local preview and installation. Updating Gaebal alone therefore fixes the
+JACK2 selection problem with the existing 0.5.1 SDL bundle. Soozip 0.5.2 embeds
+the updated installer in newly built bundles. Unknown or modified installers
+remain rejected. Pip bundles retain their separate matching-installer checks.
 
 ### Update, customize, or remove an app
 
@@ -651,6 +662,12 @@ OFFLINE_APT_SDL=1 OFFLINE_APT_SDL_BUNDLE=/absolute/path/to/offline-apt \
   PYTHONPATH=src:Soozip/src:Gaebal/src \
   .venv/bin/python -m unittest discover -s tests -p test_sdl_acceptance.py -v
 
+# Packaged Gaebal automatically keeps an existing JACK2 runtime, using the
+# original 0.5.1 SDL bundle without a preparation bundle or archive modification.
+OFFLINE_APT_JACK2_AUTO=1 OFFLINE_APT_SDL_BUNDLE=/absolute/path/to/offline-apt \
+  PYTHONPATH=src:Soozip/src:Gaebal/src \
+  .venv/bin/python -m unittest discover -s tests -p test_jack2_automatic.py -v
+
 # Full acceptance: additionally download/build/test jq and the development set.
 ./tests/test_end_to_end.sh
 ```
@@ -683,6 +700,21 @@ Confirm the offline VM has no separately installed Python packages, Docker, or
 caused by changing target package state before installation.
 
 ### Validation status for this release
+
+Version 0.5.2 retries removal-blocked APT plans while retaining installed
+packages, including the JACK2 runtime. Compatible development dependencies are
+installed as part of the original reviewed transaction. The same constraints
+are used for preview and installation, and approval tokens bind the installer
+and selected constraints. Existing automatic/manual flags are preserved for
+retained dependencies. Genuine conflicts, missing alternatives, held-package
+changes and forbidden APT pins still block without changing package state.
+
+Both portable clients must be updated for new 0.5.2 bundles. For the existing
+0.5.1 SDL bundle, updating Gaebal is sufficient: its known legacy installer is
+recognized by exact hash, and the current trusted client installer is used.
+The original bundle and its validation evidence stay unchanged. The standalone
+installer inside an old archive retains its old behavior; use updated Gaebal
+to obtain automatic provider retention with that archive.
 
 Version 0.5.1 adds default APT compatibility packages and concise removal
 diagnostics. The standalone APT installer is unchanged. Compatibility enrichment
@@ -718,9 +750,9 @@ Fresh-desktop, Wayland/X11, and interactive polkit acceptance checks have not be
 repeated for 0.4.2.
 
 Version 0.4.2 changed the embedded installer; version 0.5.1 retains those APT
-installer bytes. Installer bytes must match the client and the bundle's
-checksum and validation evidence. Do not edit an existing bundle's `install.sh`
-or checksums to bypass the version check.
+installer bytes. Gaebal 0.5.2 explicitly recognizes that known legacy installer
+as described above. Do not edit an existing bundle's `install.sh` or checksums
+to bypass the version check.
 
 Version 0.4.1 makes Soozip's Docker setup the default (with
 `--skip-docker-setup` available), selects the Korean Ubuntu archive mirror,

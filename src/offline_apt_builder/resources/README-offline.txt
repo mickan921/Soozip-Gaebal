@@ -11,6 +11,11 @@ installs only what the requested transaction needs. Existing system libraries
 and their companion packages may need to be upgraded together; review these
 changes before approving them. Package removals remain forbidden.
 
+If APT initially chooses dependencies that would remove an installed provider,
+the installer retries while keeping that provider installed. This handles JACK2
+desktops automatically when compatible development packages are in the bundle.
+The final reviewed transaction still permits no removals or held-package changes.
+
 Standalone fallback (requires an existing 7zz extractor):
 
   sha256sum -c @ARCHIVE@.sha256

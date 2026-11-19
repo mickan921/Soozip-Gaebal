@@ -97,6 +97,19 @@ bundle("wrong-arch", "offline-test-tool=2", [pre, dep, tool], arch="arm64")
 bundle("missing", "offline-test-tool=2", [tool])
 bundle('config', 'offline-test-config=2', [config_new])
 
+# JACK-like alternatives: an installed runtime alone does not stop APT from
+# choosing the first development dependency and proposing a provider swap.
+choice_one = deb('offline-choice-one', extra='Conflicts: offline-choice-two\n')
+choice_two = deb('offline-choice-two', extra='Conflicts: offline-choice-one\n')
+choice_two_new = deb('offline-choice-two', '2', extra='Conflicts: offline-choice-one\n')
+choice_dev_one = deb('offline-choice-dev-one', extra='Depends: offline-choice-one (= 1)\n')
+choice_dev_two = deb('offline-choice-dev-two', extra='Depends: offline-choice-two (= 1)\nProvides: offline-choice-dev-one\nConflicts: offline-choice-dev-one\n')
+choice_dev_two_new = deb('offline-choice-dev-two', '2', extra='Depends: offline-choice-two (= 2)\nProvides: offline-choice-dev-one\nConflicts: offline-choice-dev-one\n')
+choice_tool = deb('offline-choice-tool', extra='Depends: offline-choice-dev-one | offline-choice-dev-two\n')
+bundle('choice', 'offline-choice-tool=1', [choice_one, choice_two, choice_dev_one, choice_dev_two, choice_tool])
+bundle('choice-upgrade', 'offline-choice-tool=1', [choice_one, choice_two_new, choice_dev_one, choice_dev_two_new, choice_tool])
+bundle('choice-missing', 'offline-choice-tool=1', [choice_one, choice_dev_one, choice_tool])
+
 
 def ordered_deb(name, version='1', extra='', configured=(), preconfigured=()):
     """Fail inside dpkg if it configures/unpacks a dependent too early."""

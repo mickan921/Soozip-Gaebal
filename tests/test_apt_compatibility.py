@@ -99,7 +99,7 @@ class RemovalDiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             bundle = Path(folder)
             (bundle / 'install.sh').write_text("cat <<'APT_OUTPUT'\n" + output + 'APT_OUTPUT\nexit 100\n')
-            with self.assertRaises(BuildError) as caught:
+            with patch('offline_apt_builder.install.trusted_installer', return_value=bundle / 'install.sh'), self.assertRaises(BuildError) as caught:
                 run_installer(bundle, ['--preview'], lambda *args, **kwargs: None)
             error = caught.exception
             self.assertEqual(error.diagnostics['removed_packages'], names)
@@ -109,7 +109,7 @@ class RemovalDiagnosticTests(unittest.TestCase):
             self.assertNotIn('package-010', summary)
             self.assertIn('package-119', str(error))
             # A failed real installation must not claim its earlier work was undone.
-            with self.assertRaises(BuildError) as installed:
+            with patch('offline_apt_builder.install.trusted_installer', return_value=bundle / 'install.sh'), self.assertRaises(BuildError) as installed:
                 run_installer(bundle, ['--yes'], lambda *args, **kwargs: None)
             self.assertIsNone(installed.exception.diagnostics)
             self.assertNotIn('No packages were changed', str(installed.exception))

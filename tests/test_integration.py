@@ -189,6 +189,52 @@ find /etc/apt -type f -exec sha256sum {} + | sort > /tmp/before-config
         self.install(bundle="removal", setup="dpkg -i /fixtures/pool/offline-test-existing_1_all.deb", expected=1,
                      after="dpkg-query -W -f='${db:Status-Status}' offline-test-existing | grep -qx installed")
 
+    def test_alternative_preserves_installed_provider_and_automatic_flag(self):
+        output = self.install(bundle='choice', setup='''
+dpkg -i /fixtures/pool/offline-choice-two_1_all.deb
+apt-mark auto offline-choice-two
+sha256sum /var/lib/dpkg/status /var/lib/apt/extended_states > /tmp/before
+bash '/bundle with spaces #/install.sh' --preview
+sha256sum --check /tmp/before
+''', after='''
+assert_package_absent offline-choice-one
+assert_package_absent offline-choice-dev-one
+test "$(dpkg-query -W -f='${db:Status-Status}' offline-choice-dev-two)" = installed
+apt-mark showauto offline-choice-two | grep -qx offline-choice-two
+apt-mark showmanual offline-choice-tool | grep -qx offline-choice-tool
+sha256sum /var/lib/dpkg/status /var/lib/apt/extended_states > /tmp/after
+bash '/bundle with spaces #/install.sh' --yes
+sha256sum --check /tmp/after
+''')
+        self.assertIn('Keeping installed packages', output)
+        self.assertIn('PLAN\toffline-choice-two\tkeep\t1\t1', output)
+        self.assertNotIn('Remv ', output)
+
+    def test_retained_provider_upgrades_need_approval(self):
+        setup = 'dpkg -i /fixtures/pool/offline-choice-two_1_all.deb; sha256sum /var/lib/dpkg/status > /tmp/before'
+        output = self.install(bundle='choice-upgrade', setup=setup, flags='--yes', expected=1,
+                              after='sha256sum --check /tmp/before')
+        self.assertIn('--allow-upgrades', output)
+        self.install(bundle='choice-upgrade', setup=setup,
+                     after='test "$(dpkg-query -W -f=\'${Version}\' offline-choice-two)" = 2; assert_package_absent offline-choice-one')
+
+    def test_held_retained_provider_is_kept_but_cannot_be_changed(self):
+        setup = '''dpkg -i /fixtures/pool/offline-choice-two_1_all.deb
+apt-mark hold offline-choice-two
+sha256sum /var/lib/dpkg/status > /tmp/before
+'''
+        self.install(bundle='choice', setup=setup,
+                     after='apt-mark showhold | grep -qx offline-choice-two; assert_package_absent offline-choice-one')
+        self.install(bundle='choice-upgrade', setup=setup, expected=1,
+                     after='sha256sum --check /tmp/before')
+
+    def test_unavailable_or_pinned_alternative_still_blocks_unchanged(self):
+        setup = 'dpkg -i /fixtures/pool/offline-choice-two_1_all.deb; sha256sum /var/lib/dpkg/status > /tmp/before'
+        self.install(bundle='choice-missing', setup=setup, expected=1,
+                     after='sha256sum --check /tmp/before')
+        self.install(bundle='choice', setup=setup + "; printf 'Package: offline-choice-dev-two\\nPin: version 1\\nPin-Priority: -1\\n' > /etc/apt/preferences.d/choice", expected=1,
+                     after='sha256sum --check /tmp/before')
+
     def test_companions_preserve_existing_service_and_desktop(self):
         setup = ('dpkg -i /fixtures/pool/offline-sync-runtime_1_all.deb '
                  '/fixtures/pool/offline-sync-daemon_1_all.deb /fixtures/pool/offline-sync-desktop_1_all.deb; '

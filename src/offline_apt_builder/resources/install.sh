@@ -12,11 +12,13 @@ approval_token=""
 assume_yes=0
 allow_upgrades=0
 allow_downgrades=0
+bundle_root=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=1 ;;
     --preview) dry_run=1; preview=1 ;;
     --approval-token=*) approval_token="${arg#*=}" ;;
+    --bundle-root=*) bundle_root="${arg#*=}" ;;
     --yes) assume_yes=1 ;;
     --allow-upgrades) allow_upgrades=1 ;;
     --allow-downgrades) allow_downgrades=1 ;;
@@ -25,7 +27,8 @@ for arg in "$@"; do
   esac
 done
 ((EUID == 0 || preview == 1)) || { echo 'Run this installer with sudo.' >&2; exit 1; }
-root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+installer="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+root="$(cd -- "${bundle_root:-$(dirname -- "$installer")}" && pwd -P)"
 
 # A separate worker retains errexit semantics while tee records diagnostics.
 # This avoids process-substitution logging and keeps all APT state temporary.
@@ -40,7 +43,7 @@ if [[ "${_OFFLINE_APT_LOGGED:-}" != 1 ]] && ((preview == 0)); then
     fi
   }
   trap finish_log EXIT
-  _OFFLINE_APT_LOGGED=1 bash "$root/install.sh" "$@" 2>&1 | tee "$log_dir/install.log"
+  _OFFLINE_APT_LOGGED=1 bash "$installer" "$@" 2>&1 | tee "$log_dir/install.log"
   exit 0
 fi
 
@@ -149,9 +152,53 @@ stage=preview
 state_before="$(state_fingerprint)"
 apt-mark showhold | sed 's/:.*//' > "$tmp/holds"
 echo '[3/4] Planned changes:'
-if ! apt-get --simulate --no-remove install "${targets[@]}" 2>&1 | tee "$tmp/simulation"; then
+# APT's default alternative can conflict with an installed provider even when
+# another bundled provider works. Retain every proposed removal explicitly and
+# retry, without ever permitting removals or changing package state to plan.
+solver_targets=("${targets[@]}")
+preserved_packages=()
+declare -A preserved=() requested=()
+for target in "${targets[@]}"; do requested["${target%%=*}"]=1; done
+plan_ready=0
+for attempt in 0 1 2 3 4; do
+  attempt_log="$tmp/attempt-$attempt"
+  if apt-get --simulate --no-remove install "${solver_targets[@]}" > "$attempt_log" 2>&1 &&
+      ! grep -Eq '^Remv[[:space:]]' "$attempt_log"; then
+    cp -- "$attempt_log" "$tmp/simulation"
+    plan_ready=1
+    break
+  fi
+  # The no-remove error often has no Remv records, only the wrapped list.
+  awk '
+    /^The following packages will be REMOVED:$/ { removals=1; next }
+    removals && /^  / { for (i=1; i<=NF; i++) print $i; next }
+    { removals=0 }
+    $1 == "Remv" { print $2 }
+  ' "$attempt_log" | sort -u > "$tmp/removals"
+  added=0
+  while IFS= read -r name; do
+    [[ "$name" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?$ ]] || continue
+    current="$(dpkg-query -W -f='${binary:Package}\t${db:Status-Status}' "$name" 2>/dev/null || true)"
+    [[ "${current#*$'\t'}" == installed ]] || continue
+    canonical="${current%%$'\t'*}"
+    [[ "$canonical" =~ ^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?$ ]] || continue
+    # Never let a retry override an explicitly requested exact version.
+    [[ -z "${requested[${canonical%%:*}]:-}" && -z "${preserved[$canonical]:-}" ]] || continue
+    preserved["$canonical"]=1
+    preserved_packages+=("$canonical")
+    solver_targets+=("$canonical+")
+    added=1
+  done < "$tmp/removals"
+  ((added)) || break
+done
+if ((plan_ready == 0)); then
+  cat "$tmp"/attempt-*
   fail 'Cannot safely install these bundle versions on this machine. Review the APT details above for conflicting versions, missing dependencies, or package-manager problems. No packages were changed; resolve the conflict or build a compatible bundle, then reopen it.'
 fi
+if ((${#preserved_packages[@]})); then
+  printf 'Keeping installed packages while selecting compatible dependencies: %s\n' "${preserved_packages[*]}"
+fi
+cat "$tmp/simulation"
 if grep -Eq '^Remv[[:space:]]' "$tmp/simulation"; then
   fail 'Package removals are forbidden. Resolve the conflict without removing packages.'
 fi
@@ -207,8 +254,14 @@ for target in "${targets[@]}"; do
   [[ "$current" == "installed"$'\t'"$expected" ]] || fail "APT did not plan installation of $name=$expected. Reopen the bundle after resolving the package state."
   printf 'PLAN\t%s\tkeep\t%s\t%s\n' "$name" "$expected" "$expected" >> "$tmp/actions"
 done
+# Show retained providers in the review even when their versions do not change.
+for name in "${preserved_packages[@]}"; do
+  if awk -F '\t' -v name="$name" '$2 == name || $2 == name ":amd64" || $2 ":amd64" == name { found=1 } END { exit !found }' "$tmp/actions"; then continue; fi
+  current="$(dpkg-query -W -f='${Version}' "$name")"
+  printf 'PLAN\t%s\tkeep\t%s\t%s\n' "$name" "$current" "$current" >> "$tmp/actions"
+done
 [[ "$(state_fingerprint)" == "$state_before" ]] || fail 'Target state changed during preview; review again.'
-computed_token="$({ printf '%s\n' "$state_before"; (cd -- "$root" && sha256sum SHA256SUMS); cat "$tmp/actions"; } | sha256sum | awk '{print $1}')"
+computed_token="$({ printf '%s\n' "$state_before"; (cd -- "$root" && sha256sum SHA256SUMS); sha256sum "$installer" | awk '{print $1}'; printf '%s\n' "${solver_targets[@]}"; cat "$tmp/actions"; } | sha256sum | awk '{print $1}')"
 if ((preview)); then
   cat "$tmp/actions"
   printf 'APPROVAL\t%s\n' "$computed_token"
@@ -246,11 +299,24 @@ if ((assume_yes)); then export DEBIAN_FRONTEND=noninteractive; fi
 stage=install
 echo '[4/4] Installing and checking dependency consistency...'
 if awk -F '\t' '$3 != "keep" { changed=1 } END { exit !changed }' "$tmp/actions"; then
-  apt-get "${options[@]}" install "${targets[@]}"
+  # Explicit retention constraints must not turn automatic dependencies into
+  # manually installed packages. Restore only their original automatic flags.
+  preserved_auto=()
+  if ((${#preserved_packages[@]})); then
+    apt-mark showauto "${preserved_packages[@]}" > "$tmp/preserved-auto"
+    mapfile -t preserved_auto < "$tmp/preserved-auto"
+  fi
+  install_code=0
+  apt-get "${options[@]}" install "${solver_targets[@]}" || install_code=$?
+  if ((${#preserved_auto[@]})); then apt-mark auto "${preserved_auto[@]}"; fi
+  ((install_code == 0)) || fail "APT installation failed (exit $install_code). Review the details above; completed package changes are not rolled back."
 else
   echo 'All requested package versions are already installed; no package changes needed.'
 fi
 apt-get check
+for name in "${preserved_packages[@]}"; do
+  [[ "$(dpkg-query -W -f='${db:Status-Status}' "$name")" == installed ]] || fail "Retained package $name is not fully installed."
+done
 for target in "${targets[@]}"; do
   name="${target%%=*}"
   expected="${target#*=}"
