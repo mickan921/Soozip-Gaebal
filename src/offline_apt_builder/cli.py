@@ -12,10 +12,13 @@ from .build import build
 from .inputs import read_packages
 from .models import BuildError, BuildRequest
 from .runner import redact
+from .pip_build import build_pip
+from .pip_inputs import PYTHON_VERSIONS, read_requirements
+from .models import PipBuildRequest
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build tested Ubuntu 24.04 amd64 offline APT bundles.")
+    parser = argparse.ArgumentParser(description="Build tested Ubuntu 24.04 amd64 offline APT and pip bundles.")
     parser.add_argument("--version", action="version", version=__version__)
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("build", help="Download, test without networking, and package a local APT repository")
@@ -28,6 +31,14 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--keep-workdir", action="store_true")
     command.add_argument("--verbose", action="store_true")
     command.add_argument("--json", action="store_true", help="Write final result JSON to stdout; progress remains on stderr")
+    pip_command = commands.add_parser('build-pip', help='Build and validate an offline Python wheel bundle')
+    pip_command.add_argument('requirements', nargs='*')
+    pip_command.add_argument('--requirements-file', action='append', type=Path, default=[])
+    pip_command.add_argument('--python-version', choices=PYTHON_VERSIONS, default='3.12')
+    pip_command.add_argument('-o', '--output', type=Path, default=Path('offline-output'))
+    pip_command.add_argument('--keep-workdir', action='store_true')
+    pip_command.add_argument('--verbose', action='store_true')
+    pip_command.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
     previous = signal.getsignal(signal.SIGTERM)
 
@@ -36,9 +47,15 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, terminate)
     try:
-        packages = read_packages(args.packages, args.packages_file)
-        request = BuildRequest(packages, args.output, args.arch, args.with_recommends, args.skip_test, args.keep_workdir)
-        result = build(request,
+        if args.command == 'build-pip':
+            request = PipBuildRequest(read_requirements(args.requirements, args.requirements_file), args.output,
+                                      args.python_version, args.keep_workdir)
+            engine = build_pip
+        else:
+            packages = read_packages(args.packages, args.packages_file)
+            request = BuildRequest(packages, args.output, args.arch, args.with_recommends, args.skip_test, args.keep_workdir)
+            engine = build
+        result = engine(request,
                        progress=lambda event: print(f"[{event.stage}] {event.message}", file=sys.stderr),
                        emit_log=(lambda line: print(line, file=sys.stderr)) if args.verbose else None)
         if args.json:

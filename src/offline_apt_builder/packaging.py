@@ -47,10 +47,11 @@ def package_bundle(bundle: Path, output: Path, name: str) -> tuple[Path, Path, s
         partial.unlink()  # 7zz must create a new archive, not update an empty file.
         with tempfile.TemporaryDirectory(prefix="offline-apt-pack-") as temporary_root:
             staging = Path(temporary_root)
-            source = staging / "offline-apt"
+            root_name = 'offline-pip' if bundle.name == 'offline-pip' else 'offline-apt'
+            source = staging / root_name
             before = inventory(bundle)
             shutil.copytree(bundle, source)
-            run7(["a", "-t7z", "-m0=lzma2", "-mx=5", "-ms=off", str(partial), "offline-apt"], cwd=staging)
+            run7(["a", "-t7z", "-m0=lzma2", "-mx=5", "-ms=off", str(partial), root_name], cwd=staging)
             extracted = staging / "roundtrip"
             extracted.mkdir()
             restored = extract_archive(partial, extracted, check_suffix=False)

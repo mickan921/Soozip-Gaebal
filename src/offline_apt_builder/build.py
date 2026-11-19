@@ -108,7 +108,7 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
         context = work / "container-context"
         context.mkdir()
         resources = files("offline_apt_builder").joinpath("resources")
-        for name in ("Dockerfile.builder", "resolve.py", "ubuntu.sources"):
+        for name in ("Dockerfile.builder", "resolve.py", "apt_compatibility.py", "ubuntu.sources"):
             (context / name).write_bytes(resources.joinpath(name).read_bytes())
         (bundle / "install.sh").write_bytes(resources.joinpath("install.sh").read_bytes())
         (bundle / "install.sh").chmod(0o755)
@@ -139,6 +139,10 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
         containers.append(resolver_container)
 
         def resolver_progress(line: str) -> None:
+            if line.startswith('OFFLINE_APT_COMPATIBILITY_BYTES='):
+                amount = int(line.strip().split('=', 1)[1])
+                event('compatibility', f'Included {amount / 1024**2:,.1f} MiB of matching compatibility packages. '
+                      'Gaebal installs only those needed by the reviewed transaction.')
             if line.startswith("OFFLINE_APT_DOWNLOAD_BYTES="):
                 amount = int(line.strip().split("=", 1)[1])
                 label = "Large download" if amount >= 1024**3 else "Download"
@@ -177,6 +181,8 @@ def build(request: BuildRequest, progress: ProgressCallback | None = None,
             test_report = validate(runner, bundle, base_image, validator_container, manifest["selections"], work / "test-report.json")
         status = test_report["status"]
         report.update(status=status, test=test_report, package_count=len(manifest["packages"]))
+        if 'compatibility' in manifest:
+            report['compatibility'] = manifest['compatibility']
         manifest["validation_status"] = status
         manifest["test_report"] = "test-report.json"
         write_json(bundle / "manifest.json", manifest)

@@ -92,6 +92,18 @@ class ResolverTests(unittest.TestCase):
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_optional_source_metadata_is_checked_and_legacy_metadata_remains_valid(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder)
+            manifest = repository_fixture(bundle)
+            verify_repository(bundle, manifest)
+            package = manifest['packages'][0]
+            package.update(source_name='example', source_version='1', inclusion_reasons=['requested package or dependency'])
+            verify_repository(bundle, manifest)
+            package['source_version'] = '2'
+            with self.assertRaisesRegex(BuildError, 'source identity'):
+                verify_repository(bundle, manifest)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

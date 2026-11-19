@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import re
 
 from offline_apt_builder.repository import sha256, write_checksums, write_json
 
@@ -138,6 +139,68 @@ blocker = deb('offline-complex-blocker', extra='Depends: offline-complex-runtime
 bundle('complex', ['offline-complex-suite=2', 'offline-complex-service=2', 'offline-complex-compat=1',
                    'offline-complex-common=1', 'offline-complex-foundation=1'],
        [suite, service_new, cli, core_new, plugin, runtime_new, engine_new, compat_new, common, preflight, foundation])
+
+# A real APT-resolved companion repository. Updating the library alone would
+# remove the old daemon and its desktop dependent. The alternate daemon cannot
+# coexist with the main one, but must be safe to carry as a repository option.
+from offline_apt_builder.resources.apt_compatibility import PackageVersion, expand_companions
+import apt_pkg
+
+sync_paths = {}
+sync_metadata = {}
+for name, version, depends, conflicts in (
+    ('runtime', '1', '', ''), ('runtime', '2', '', ''),
+    ('shared', '2', '', ''),
+    ('daemon', '1', 'offline-sync-runtime (= 1)', ''),
+    ('daemon', '2', 'offline-sync-runtime (= 2), offline-sync-shared (= 2)', ''),
+    ('plugin', '2', 'offline-sync-shared (= 2)', ''),
+    ('alternate', '2', 'offline-sync-runtime (= 2)', 'offline-sync-daemon'),
+    ('headers', '2', 'offline-sync-runtime (= 2)', ''),
+):
+    full_name = 'offline-sync-' + name
+    extra = f'Source: offline-sync ({version})\n'
+    if depends:
+        extra += 'Depends: ' + depends + '\n'
+    if conflicts:
+        extra += 'Conflicts: ' + conflicts + '\n'
+    path = deb(full_name, version, extra)
+    exact = tuple((n, v) for alternatives in apt_pkg.parse_depends(depends)
+                  for n, v, relation in alternatives if relation == '=')
+    sync_paths[(full_name, version)] = path
+    sync_metadata[(full_name, version)] = PackageVersion(full_name, version, 'all', 'offline-sync', version,
+                                                      path.stat().st_size, exact)
+desktop = deb('offline-sync-desktop', extra='Depends: offline-sync-daemon (>= 1)\n')
+sync_state = ROOT / 'sync-state'
+(sync_state / 'lists/partial').mkdir(parents=True)
+(sync_state / 'empty').mkdir()
+(sync_state / 'status').touch()
+with (POOL / 'Packages').open('wb') as stream:
+    subprocess.run(['dpkg-scanpackages', '--multiversion', '.', '/dev/null'], cwd=POOL, stdout=stream, check=True)
+(sync_state / 'sources.list').write_text(f'deb [trusted=yes] file:{POOL} ./\n')
+(sync_state / 'apt.conf').write_text(f'''Dir::Etc::parts "{sync_state}/empty";
+Dir::Etc::main "/dev/null";
+Dir::Etc::sourcelist "{sync_state}/sources.list";
+Dir::Etc::sourceparts "{sync_state}/empty";
+Dir::State::status "{sync_state}/status";
+Dir::State::lists "{sync_state}/lists";
+Dir::Cache::pkgcache "";
+Dir::Cache::srcpkgcache "";
+APT::Install-Recommends "false";
+APT::Sandbox::User "root";
+''')
+sync_env = {**os.environ, 'APT_CONFIG': str(sync_state / 'apt.conf'), 'LC_ALL': 'C'}
+subprocess.run(['apt-get', 'update'], env=sync_env, check=True)
+
+def resolve_sync(peer):
+    output = subprocess.check_output(['apt-get', '--simulate', '--no-remove', 'install', f'{peer.name}={peer.version}'],
+                                     env=sync_env, text=True)
+    return [sync_metadata[(m[1], m[2])] for m in re.finditer(r'^Inst (\S+) \((\S+) ', output, re.M)]
+
+initial = resolve_sync(sync_metadata[('offline-sync-headers', '2')])
+expanded, _ = expand_companions(initial, sync_metadata.values(), resolve_sync)
+assert {p.name for p in expanded} == {'offline-sync-' + name for name in ('runtime', 'shared', 'daemon', 'plugin', 'alternate', 'headers')}
+bundle('sync-incomplete', 'offline-sync-headers=2', [sync_paths[(p.name, p.version)] for p in initial])
+bundle('sync-complete', 'offline-sync-headers=2', [sync_paths[(p.name, p.version)] for p in expanded])
 
 uid, gid = int(os.environ["BUILDER_UID"]), int(os.environ["BUILDER_GID"])
 for root, directories, filenames in os.walk(ROOT):

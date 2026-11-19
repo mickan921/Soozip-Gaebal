@@ -76,7 +76,7 @@ def parse_listing(output: str) -> dict[str, tuple[bool, int]]:
         path = PurePosixPath(name)
         if (not re.fullmatch(r'[A-Za-z0-9_+.,@%:= /#~-]+', name) or path.is_absolute()
                 or '..' in path.parts or str(path) != name or not path.parts
-                or path.parts[0] != 'offline-apt' or name in entries):
+                or path.parts[0] not in {'offline-apt', 'offline-pip'} or name in entries):
             raise BuildError(f'Unsafe or duplicate archive path: {name!r}')
         attrs = fields.get('Attributes', '')
         unix_modes = re.findall(r'(?<!\S)([bcdlps-][rwxstST-]{9})(?!\S)', attrs)
@@ -91,7 +91,8 @@ def parse_listing(output: str) -> dict[str, tuple[bool, int]]:
         if size < 0 or (directory and size):
             raise BuildError('Invalid archive size.')
         entries[name] = (directory, size)
-    if not entries or entries.get('offline-apt', (True, 0))[0] is False:
+    roots = {PurePosixPath(name).parts[0] for name in entries}
+    if len(roots) != 1 or entries.get(next(iter(roots)), (True, 0))[0] is False:
         raise BuildError('Missing bundle directory.')
     for name in entries:
         for parent in PurePosixPath(name).parents:
@@ -123,7 +124,7 @@ def extract_archive(archive: Path, destination: Path, *, check_suffix=True) -> P
     for name in expected_files:
         if (destination / name).stat().st_size != entries[name][1]:
             raise BuildError('Extracted file size mismatch.')
-    return destination / 'offline-apt'
+    return destination / PurePosixPath(next(iter(entries))).parts[0]
 
 
 def verify_sidecar(archive: Path) -> None:

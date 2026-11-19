@@ -1,8 +1,15 @@
 # Soozip & Gaebal
 
-**Soozip** builds a portable local APT repository on an **online Ubuntu 24.04 amd64 workstation**, tests the shipped installer in a fresh container with **networking disabled**, and produces one `.7z` archive (with an optional checksum sidecar). Transfer it into an air-gapped Ubuntu 24.04 amd64 machine and install it with **Gaebal**.
+**Soozip** builds a portable local APT repository or Python wheel bundle on an **online Ubuntu 24.04 amd64 workstation**, tests the shipped installer in a fresh container with **networking disabled**, and produces one `.7z` archive (with an optional checksum sidecar). Transfer it into an air-gapped Ubuntu 24.04 amd64 machine and install it with **Gaebal**. Select APT or pip in Soozip; Gaebal detects the bundle type.
 
-The target needs standard Ubuntu APT/dpkg/Bash tools and sufficient disk space. It does not need Docker, Python additions, GitHub access, or an internet connection. Nothing needs to leave the air-gapped network. The application never uploads bundles, reports, or logs.
+For APT bundles, the target needs standard Ubuntu APT/dpkg/Bash tools and sufficient disk space. It does not need Docker, Python additions, GitHub access, or an internet connection. Nothing needs to leave the air-gapped network. The application never uploads bundles, reports, or logs.
+
+For **pip bundles**, the destination additionally needs the selected standard
+CPython version (3.11–3.14) and its `venv` module prepared before disconnection.
+Gaebal installs Python packages as your normal user into an isolated virtualenv.
+Pip itself does not need to be installed: each bundle carries pinned offline
+installer tooling. The portable client's embedded Python is separate from the
+Python interpreter used for your packages.
 
 The online builder assumes none of the requested software or its dependencies
 are installed on the destination. It bundles required dependencies recursively,
@@ -11,6 +18,18 @@ already installed on the online machine. For example, a `jq` bundle includes
 `libjq1`, `libonig5`, `libc6`, and their required dependencies. Optional
 `Recommends` are included when selected; `Suggests` are excluded. A minimal
 installed Ubuntu system is still required; the bundle is not an OS installer.
+
+APT bundles also include **matching compatibility packages by default**. A
+library update may require matching updates for software already on the offline
+machine: for example, SDL development libraries can require updating the
+systemd/udev family or Mesa drivers together. Soozip follows exact-version
+dependencies between binaries from the same Ubuntu source-package version,
+resolves each companion's dependencies independently, and repeats this until
+the repository is complete. These extra packages can make archives substantially
+larger; their additional download size appears during the build. They are
+repository options, not extra installation targets. Gaebal installs only what
+APT needs for the reviewed transaction, with the usual version-change approvals.
+No machine inventory needs to leave the offline network.
 
 Two native PySide6 desktop clients and the Python CLI share the build and installation engines. macOS, arm64, cross builds, PPAs, and vendor repositories are unsupported.
 
@@ -213,8 +232,16 @@ stop the preview with details and leave packages unchanged; resolve the conflict
 or build a compatible bundle, then reopen it to retry. Errors during installation
 can leave completed package changes in place, so review Details before retrying.
 
-The 0.4.2 installer changes require bundles rebuilt with Soozip 0.4.2 and the
-matching Gaebal client. Older bundles report an installer-version mismatch.
+If APT proposes removing packages, Gaebal displays the count and first ten names
+in a selectable summary, with the complete list in Details. The Install button
+stays disabled. Rebuild older bundles with current Soozip to include compatibility
+packages. Do not disable removal protection or manually uninstall desktop
+packages to make the bundle fit. Genuine package conflicts, holds, or unsupported
+vendor versions may still need local diagnosis.
+
+The 0.5.1 clients continue to accept APT bundles using the unchanged 0.4.2 installer.
+Pip bundles require 0.5.0 and a matching pip installer; transfer matching clients
+when upgrading installer versions. Older APT installers remain incompatible.
 
 ### Update, customize, or remove an app
 
@@ -270,6 +297,140 @@ another machine, use its complete portable archive from `dist/`, not its source
 folder. The source checkout installer reports that a portable build is needed;
 build the clients first to create the complete installable payload. The installable Python distribution is `soozip-gaebal`; its GUI commands
 are `soozip` and `gaebal`. The shared advanced CLI remains `offline-apt-builder`.
+
+## Build and install Python packages (pip)
+
+### Online: Soozip
+
+1. Select **Python packages (pip)** and the destination's CPython minor version:
+   **3.11, 3.12, 3.13, or 3.14**. The default is 3.12. Each bundle targets one version.
+2. Enter one PyPI requirement per line or use **Import requirements.txt…**:
+
+   ```text
+   requests>=2.32
+   numpy
+   httpx[http2]
+   typing-extensions; python_version < "3.13"
+   ```
+
+   Blank lines and `#` comments are supported. Requirements may include version
+   constraints, extras, and environment markers. Pip options (`-r`, `-c`,
+   `--index-url`, `--hash`, etc.), URLs, editable installs, Git dependencies, and
+   local projects are rejected with line-specific errors. This is a requirements
+   specifier import, not support for every directive in pip's file format.
+3. Choose the output folder and click **Build and Validate Bundle**. Soozip
+   resolves the complete dependency closure from PyPI using the selected Python
+   inside Ubuntu 24.04 Docker containers. Host-installed packages are not used.
+4. Wait for **VALIDATED**, then transfer the `.7z` and matching checksum inward.
+
+Every package and dependency must have a compatible **prebuilt wheel**. Source
+builds and private indexes are unsupported. The online builder needs access to
+PyPI, its file host, Docker Hub, and GitHub's python-build-standalone releases.
+Python runtime and installer tooling downloads are checksum-pinned. Container
+runtime identities and Python patch versions are recorded in the manifest/report.
+The downloaded Python runtime stays on the builder; it is not provisioned on the
+offline destination. Frozen installer tooling wheels include their licenses.
+
+### Offline: Gaebal
+
+1. Open/drop the `.7z`. After integrity verification, Gaebal shows the required
+   Python version and environment controls.
+2. Choose **Create virtualenv**, select an installed interpreter, and choose a
+   new directory. Compatible interpreters on PATH are listed; **Python
+   executable…** can select another installation. The default environment is
+   `~/.virtualenvs/gaebal-<build-id>`, separate from the portable client.
+   Alternatively choose **Use existing virtualenv** and select its directory;
+   its own interpreter is used.
+3. Click **Review Python Package Changes**. Preview does not create the virtualenv
+   or change installed packages. Review all dependencies as well as requested
+   packages, and separately approve listed upgrades/downgrades.
+4. Click **Install Reviewed Packages…**. Pip installations do not request sudo or
+   polkit authentication. Keep the application open until installation finishes.
+5. Use the environment path and activation command shown on success. An existing
+   environment already matching every bundled version needs no installation.
+
+The environment must be writable and isolated. System Python, Conda, PyPy,
+debug/free-threaded builds, and virtualenvs with system site-packages are
+unsupported. Missing Python or `venv` support must be provisioned separately;
+Gaebal does not download them. Wheel tags, Python requirements, and environment
+markers are checked against the actual interpreter. Patch-version-specific
+marker differences can require rebuilding a compatible bundle.
+
+Installs use only local wheels with exact version pins and SHA-256 hashes.
+External indexes, inherited pip configuration, pip caches, and version checks
+are disabled. Conflicts with existing packages block preview, and unrelated
+packages are preserved. Any change to the bundle, environment selection,
+interpreter, or installed metadata requires a fresh preview. Use one package
+manager at a time; Gaebal serializes its own jobs for each environment.
+
+Existing-environment changes are not rolled back after a failure. A failed new
+installation may leave its newly created environment in place; inspect the local
+diagnostic log, then select it as an existing environment to review/retry, or
+choose a new directory. Environment directories are never moved or overwritten.
+If creation stopped before `bin/python` was written (for example, because the
+destination filled up), choose a new empty destination after freeing space.
+No installation modifies the system Python environment.
+
+**VALIDATED** confirms installation in a clean, unprivileged virtualenv with
+Docker networking disabled, exact installed versions, and a successful `pip
+check`. It does not guarantee every application-level behavior. Native system
+libraries, GPU drivers, and other non-Python runtime dependencies are not bundled;
+provision them separately, using APT bundles where appropriate.
+
+### CLI and bundle format
+
+```bash
+.venv/bin/offline-apt-builder build-pip --python-version 3.12 \
+  --output "$HOME/offline-bundles" 'requests>=2.32' numpy
+
+.venv/bin/offline-apt-builder build-pip --python-version 3.14 \
+  --requirements-file requirements.txt --json
+```
+
+`--requirements-file` is repeatable. Pip builds support `--verbose` and
+`--keep-workdir`; they always validate and have no `--skip-test` option.
+The result JSON and exit codes match the APT command.
+
+Pip archives are named `ubuntu24.04-amd64-pip-py<version>-<build-id>.7z` and
+contain one `offline-pip/` directory with `manifest.json` (pip schema 1),
+`requirements.txt`, `requirements.lock`, `wheelhouse/`, `tooling/`,
+`install-pip.py`, `SHA256SUMS`, `test-report.json`, and logs. APT archives retain
+their `offline-apt/` layout and schema 2. Mixed roots are rejected.
+
+For development, run the unit/Qt tests normally. Real virtualenv regression
+tests use `OFFLINE_PIP_TOOLING=/path/to/validated/bundle/tooling`. Set
+`OFFLINE_PIP_ACCEPTANCE=1` to run the four-version PyPI/Docker matrix; add
+`OFFLINE_PIP_PORTABLE=1` after building clients to test the frozen Gaebal worker.
+The matrix covers `requests`, native NumPy wheels, HTTPX extras and its CLI,
+Python-version markers, restrictive umasks (022/027/077), repeat installs, and
+disk-full recovery with retained diagnostics. To rerun one version, set
+`OFFLINE_PIP_VERSIONS=3.12` (comma-separated selections are supported).
+
+Run the remaining failure and packaged desktop checks explicitly:
+
+```bash
+PYTHONPATH=src:tests OFFLINE_PIP_FAILURES=1 \
+  .venv/bin/python -m unittest discover -s tests -p test_pip_failure_integration.py -v
+PYTHONPATH=src:tests OFFLINE_PIP_DESKTOP=1 \
+  .venv/bin/python -m unittest discover -s tests -p test_pip_packaged_desktop.py -v
+```
+
+Failure checks exercise real resolver conflicts/missing wheels, a truncated HTTP
+response, and cancellation of a running resolver container. The desktop test
+requires built client archives, a local Docker socket and Buildx; it installs the
+portable apps into fresh Ubuntu 24.04 X11 containers, builds through Soozip, then
+installs through Gaebal with `--network none`. It checks interpreter selection,
+preview, install protection, console scripts in paths with spaces, and an
+existing-environment no-op. Screenshots and logs are retained under `build/`.
+This checks the packaged desktop applications, but does not replace testing on a
+physical desktop or VM with the intended graphics/session setup.
+
+For repeated acceptance/failure runs, `OFFLINE_PIP_CACHE_REPORTS` may name a
+directory of successful build reports retained with `--keep-workdir`. Tests
+reuse runtime/tooling files only after verifying their pinned checksums; PyPI
+package resolution remains live. Production builds always fetch their pinned
+runtime/tooling. Payload permissions are normalized for the unprivileged offline
+validator without changing the builder's umask or private workspace permissions.
 
 ## Developer setup (not required for portable app users)
 
@@ -448,8 +609,10 @@ offline-apt/
 
 - Only official Ubuntu `noble`, `noble-updates`, and `noble-security` repositories are used, with main, restricted, universe, and multiverse. Host repository settings are never imported.
 - APT resolves against a real empty status database and isolated lists/caches. Dependencies already present in either the workstation or tooling container are still downloaded. APT handles dependencies, pre-dependencies, and alternatives.
+- Compatibility expansion follows same-source exact `Depends`/`Pre-Depends` links and each companion's forward dependency closure. Companions are resolved separately, so conflicting alternatives can coexist in the repository without being installed together. Conflicting versions of the same binary package fail the build.
 - Downloaded package sizes and SHA-256 hashes are checked against authenticated Ubuntu indexes. The generated repository is checked independently against its manifest and compressed indexes.
 - Manifest schema version 2 records requested names, selected concrete packages/providers and exact versions, package metadata, repository release files/hashes, image identifiers, tool version, and UTC build time. Metadata ordering is stable; changing upstream repositories means future builds need not be byte-identical.
+- New APT manifests optionally record each binary's source name/version and inclusion reasons, plus the compatibility package count and bytes. Older schema-2 manifests remain supported.
 - The tooling image derives from an immutable repository digest. Validation uses the original, fresh Ubuntu base by its immutable local image ID, without tooling additions or image pulls during testing.
 - Installer configuration is loaded through `APT_CONFIG` before system APT configuration fragments. Sources, lists, caches, and logs are temporary; only local `file`, `copy`, and `store` acquisition handlers are available. Target installed state, holds, and preferences remain visible. No unsafe package-manager force flags are added.
 - **VALIDATED** means the exact shipped installer succeeded with a read-only bundle and Docker `--network none`, verified requested concrete packages/providers, and passed `apt-get check`. The container's network setting and exit code are checked explicitly. Reports and descriptive status are finalized afterward; the tested installation payload is checked for changes before packaging.
@@ -481,6 +644,12 @@ OFFLINE_APT_INTEGRATION=1 PYTHONPATH=src:Soozip/src:Gaebal/src \
 # Requires dist/Gaebal to match the current source version and installer.
 OFFLINE_APT_COMPLEX=1 PYTHONPATH=src:Soozip/src:Gaebal/src \
   .venv/bin/python tests/test_complex_bundle.py -v
+
+# SDL acceptance with a verified, unpacked four-package SDL bundle. Prepares
+# an older systemd/Mesa installation online, then tests with networking disabled.
+OFFLINE_APT_SDL=1 OFFLINE_APT_SDL_BUNDLE=/absolute/path/to/offline-apt \
+  PYTHONPATH=src:Soozip/src:Gaebal/src \
+  .venv/bin/python -m unittest discover -s tests -p test_sdl_acceptance.py -v
 
 # Full acceptance: additionally download/build/test jq and the development set.
 ./tests/test_end_to_end.sh
@@ -515,6 +684,26 @@ caused by changing target package state before installation.
 
 ### Validation status for this release
 
+Version 0.5.1 adds default APT compatibility packages and concise removal
+diagnostics. The standalone APT installer is unchanged. Compatibility enrichment
+does not turn clean-container validation into a guarantee for every customized
+desktop; Gaebal still performs a fresh local preview before any installation.
+
+The four-package SDL bundle passed a fresh offline installation and an offline
+upgrade from systemd `255.4-1ubuntu8` and Mesa `24.0.5-1ubuntu1`, with zero
+removals, a successful `apt-get check`, and an unchanged package database on
+repeat installation. A separate synthetic desktop reference containing GDM,
+Firefox, ALSA, and Xorg also previewed without removals. Neither test used an
+inventory from the offline destination. Unit, real APT integration, packaged
+Qt/worker, held-package, rejected-preview, and legacy 0.4.2 bundle checks passed.
+Fresh-desktop Wayland/X11 and interactive polkit checks were not repeated.
+
+Rebuild old bundles with Soozip 0.5.1 to obtain compatibility packages, and use
+Gaebal 0.5.1 for the improved removal diagnostics. Updating the client alone does
+not add packages to an existing archive.
+
+The following results describe earlier releases:
+
 Version 0.4.2 displays the runtime version in both clients, recovers controls after
 worker and workspace failures, and explicitly previews packages that are already
 installed or still need configuration. Version changes, including changes to
@@ -528,13 +717,10 @@ labels and the already-installed UI were checked with offscreen Qt rendering.
 Fresh-desktop, Wayland/X11, and interactive polkit acceptance checks have not been
 repeated for 0.4.2.
 
-**Rebuild package bundles with Soozip 0.4.2 and transfer the matching Gaebal
-0.4.2 client.** The installer embedded in each bundle has changed; updating
-Gaebal alone does not update old bundles. Installer bytes must match the client
-and the bundle's checksum and validation evidence. Do not edit an existing
-bundle's `install.sh` or checksums to bypass the version check.
-
-The following results describe earlier releases:
+Version 0.4.2 changed the embedded installer; version 0.5.1 retains those APT
+installer bytes. Installer bytes must match the client and the bundle's
+checksum and validation evidence. Do not edit an existing bundle's `install.sh`
+or checksums to bypass the version check.
 
 Version 0.4.1 makes Soozip's Docker setup the default (with
 `--skip-docker-setup` available), selects the Korean Ubuntu archive mirror,

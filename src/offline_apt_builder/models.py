@@ -8,9 +8,10 @@ from typing import Callable
 class BuildError(Exception):
     """An actionable build failure, optionally accompanied by saved diagnostics."""
 
-    def __init__(self, message: str, report: Path | None = None):
+    def __init__(self, message: str, report: Path | None = None, *, diagnostics: dict | None = None):
         super().__init__(message)
         self.report = report
+        self.diagnostics = diagnostics
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,21 @@ class BuildRequest:
     with_recommends: bool = False
     skip_test: bool = False
     keep_workdir: bool = False
+
+
+@dataclass(frozen=True)
+class PipBuildRequest:
+    requirements: tuple[str, ...]
+    output: Path
+    python_version: str = "3.12"
+    keep_workdir: bool = False
+
+
+@dataclass(frozen=True)
+class PipInstallTarget:
+    python: Path
+    venv: Path
+    create: bool = True
 
 
 @dataclass(frozen=True)

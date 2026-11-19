@@ -6,6 +6,11 @@ The .sha256 sidecar is optional; when present it must match.
 Transfer the archive inward through the approved process.
 Nothing needs to be exported from the air-gapped machine.
 
+Matching compatibility packages are included as repository options. Gaebal
+installs only what the requested transaction needs. Existing system libraries
+and their companion packages may need to be upgraded together; review these
+changes before approving them. Package removals remain forbidden.
+
 Standalone fallback (requires an existing 7zz extractor):
 
   sha256sum -c @ARCHIVE@.sha256

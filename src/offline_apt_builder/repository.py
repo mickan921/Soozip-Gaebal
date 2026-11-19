@@ -80,6 +80,16 @@ def verify_repository(bundle: Path, manifest: dict) -> None:
                     "SHA256": package["sha256"], "Size": str(package["size_bytes"])}
         if any(entry.get(k) != v for k, v in expected.items()):
             raise BuildError(f"Repository index/manifest mismatch: {filename}")
+        if 'source_name' in package or 'source_version' in package:
+            source = re.fullmatch(r'([a-z0-9][a-z0-9+.-]*)(?: \(([^()\s]+)\))?',
+                                  entry.get('Source', entry['Package']))
+            if (not source or package.get('source_name') != source[1]
+                    or package.get('source_version') != (source[2] or entry['Version'])):
+                raise BuildError(f'Repository source identity/manifest mismatch: {filename}')
+        if 'inclusion_reasons' in package:
+            reasons = package['inclusion_reasons']
+            if not isinstance(reasons, list) or not reasons or not all(isinstance(r, str) and r for r in reasons):
+                raise BuildError(f'Invalid package inclusion reasons: {filename}')
     if indexed != set(records):
         raise BuildError("Repository index omits downloaded packages.")
     targets = []

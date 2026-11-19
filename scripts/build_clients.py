@@ -100,6 +100,8 @@ def main():
             'Qt/PySide6: https://code.qt.io/pyside/pyside-setup/ (LGPL/GPL; see licenses/)\n'
             'Qt source: https://download.qt.io/archive/qt/6.10/6.10.1/submodules/\n'
             'PyInstaller: https://pyinstaller.org/ (GPL with bootloader exception)\n'
+            'packaging: https://packaging.pypa.io/ (Apache-2.0/BSD; see licenses/)\n'
+            'Pip bundles include unmodified pip/packaging wheels and their embedded licenses.\n'
             f'7-Zip {VERSION}: https://www.7-zip.org/ (LGPL; bundled license)\n'
             '7-Zip source: https://www.7-zip.org/a/7z2501-src.tar.xz\n')
         project = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']

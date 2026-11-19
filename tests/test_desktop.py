@@ -90,6 +90,29 @@ class DesktopTests(unittest.TestCase):
             self.assertTrue(window.version_label.isVisible())
             window.close()
 
+    def test_removal_failure_immediately_clears_stale_approvals(self):
+        from offline_apt_builder.install import removal_summary
+        from PySide6.QtCore import Qt
+        window = GaebalWindow()
+        window.bundle = '/fixture'
+        window.on_event({'type': 'plan', 'approval_token': 'a' * 64, 'blockers': [], 'actions': [
+            {'name': 'example', 'action': 'upgrade', 'old_version': '1', 'new_version': '2'}]})
+        window.on_event({'type': 'result', 'status': 'READY'})
+        window.finished(0)
+        window.upgrades.setChecked(True)
+        self.assertTrue(window.install_button.isEnabled())
+        diagnostics = {'category': 'removal-required', 'removed_packages': [f'package-{i}' for i in range(80)]}
+        message = removal_summary(diagnostics) + '\n' + '\n'.join(diagnostics['removed_packages'])
+        window.on_event({'type': 'error', 'message': message, 'diagnostics': diagnostics})
+        self.assertIsNone(window.plan)
+        self.assertFalse(window.install_button.isEnabled())
+        self.assertFalse(window.upgrades.isChecked())
+        self.assertIn('80 installed', window.status.text())
+        self.assertIn('package-79', window.logs.toPlainText())
+        self.assertTrue(window.status.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse)
+        window.finished(1)
+        window.close()
+
     def test_worker_handles_non_object_json_and_final_line_without_newline(self):
         worker = Worker()
         events, codes = [], []

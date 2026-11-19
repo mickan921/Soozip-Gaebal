@@ -131,7 +131,7 @@ class ComplexBundleTests(unittest.TestCase):
 
     def launch_in_container(self, operation, request, privileged=False):
         request = dict(request)
-        if operation == 'preview':
+        if operation in {'inspect', 'preview'} and 'archive' in request:
             self.preview_number += 1
             request['archive'] = '/inputs/complex-bundle.7z'
             request['workspace'] = f'/work/import-{self.preview_number}'
@@ -149,6 +149,10 @@ class ComplexBundleTests(unittest.TestCase):
         self.events.clear()
 
         def complete(code):
+            # APT import now verifies the archive before automatically starting
+            # its transaction preview. Wait for the complete UI operation.
+            if self.window.busy:
+                return
             codes.append(code)
             loop.quit()
 
@@ -251,7 +255,7 @@ class ComplexBundleTests(unittest.TestCase):
         self.preview('conflict', expected=1)
         self.assertEqual(before, self.snapshot())
         self.assertIn('offline-complex-blocker', self.window.logs.toPlainText())
-        self.assertIn('Cannot safely install', self.window.status.text())
+        self.assertIn('Installation blocked', self.window.status.text())
         self.shell('dpkg --remove offline-complex-blocker')
         self.preview('recovered')
         self.approve()

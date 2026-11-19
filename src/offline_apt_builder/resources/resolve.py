@@ -70,8 +70,10 @@ def main():
         "Dir::State::lists": str(state / "lists"),
         "Dir::State::extended_states": str(state / "extended_states"),
         "Dir::Cache::archives": str(repo),
-        "Dir::Cache::pkgcache": "",
-        "Dir::Cache::srcpkgcache": "",
+        # Hundreds of independent companion solves share immutable indexes and
+        # one empty status file. Keep caches private to this build, not disabled.
+        "Dir::Cache::pkgcache": str(state / "pkgcache.bin"),
+        "Dir::Cache::srcpkgcache": str(state / "srcpkgcache.bin"),
         "APT::Architecture": "amd64",
         "APT::Install-Recommends": "true" if request["with_recommends"] else "false",
         "APT::Install-Suggests": "false",
@@ -92,24 +94,53 @@ def main():
     # Import only after APT_CONFIG is set: importing apt initializes libapt.
     import apt
     import apt_pkg
+    from apt_compatibility import PackageVersion, expand_companions, parse_simulation
 
     apt_pkg.init()
     cache = apt.Cache()
     selections = select_packages(cache, names)
     targets = list(dict.fromkeys(f"{s['name']}={s['version']}" for s in selections))
-    # --print-uris runs the actual apt-get solver, without downloading packages.
-    plan = run(["apt-get", "--assume-yes", "--no-remove", "--download-only", "--print-uris", "install", *targets],
-               stdout=subprocess.PIPE, text=True).stdout
-    print(plan, flush=True)
-    required = 0
-    for line in plan.splitlines():
-        if line.startswith("'"):
-            fields = shlex.split(line)
-            required += int(fields[2])
+    print('Indexing exact-version companion packages from authenticated Ubuntu metadata...', flush=True)
+    available = {}
+    for package in cache:
+        if ':' in package.name:
+            continue
+        for version in package.versions:
+            if version.architecture not in {'amd64', 'all'}:
+                continue
+            exact = []
+            for field in ('Depends', 'Pre-Depends'):
+                for alternatives in apt_pkg.parse_depends(version.record.get(field, '')):
+                    for dependency, required_version, relation in alternatives:
+                        name, _, qualifier = dependency.partition(':')
+                        if relation == '=' and qualifier in {'', 'any', 'native', 'amd64'}:
+                            exact.append((name, required_version))
+            value = PackageVersion(package.name, version.version, version.architecture,
+                                   version.source_name, version.source_version, version.size, tuple(sorted(set(exact))))
+            available[(value.name, value.version)] = value
+
+    def resolve_targets(values):
+        # APT simulation against the empty status database includes every package,
+        # including dependencies already installed in the tooling image.
+        plan = run(['apt-get', '--simulate', '--no-remove', 'install', *values],
+                   stdout=subprocess.PIPE, text=True).stdout
+        return parse_simulation(plan, values, available)
+
+    initial = resolve_targets(targets)
+    resolved, reasons = expand_companions(initial, available.values(),
+                                         lambda peer: resolve_targets([f'{peer.name}={peer.version}']))
+    required = sum(p.size_bytes for p in resolved)
+    compatibility_bytes = required - sum(p.size_bytes for p in initial)
+    print('OFFLINE_APT_COMPATIBILITY_BYTES=' + str(compatibility_bytes), flush=True)
     print("OFFLINE_APT_DOWNLOAD_BYTES=" + str(required), flush=True)
     if shutil.disk_usage(repo).free < required * 2 + 64 * 1024**2:
         raise ValueError(f"Insufficient workspace disk space for {required:,} downloaded bytes plus indexing/packaging overhead.")
-    run(["apt-get", "--assume-yes", "--no-remove", "--download-only", "install", *targets])
+    # `download` does not require these repository alternatives to be co-installed.
+    # Every downloaded byte is checked against the authenticated indexes below.
+    downloads = [f'{p.name}={p.version}' for p in resolved]
+    for offset in range(0, len(downloads), 100):
+        run(['apt-get', 'download', *downloads[offset:offset + 100]], cwd=repo)
+    planned = {p.name: p for p in resolved}
     packages = []
     seen = set()
     for path in sorted(repo.glob("*.deb")):
@@ -119,6 +150,8 @@ def main():
         if arch not in {"amd64", "all"} or name in seen:
             raise ValueError(f"Mixed architecture or duplicate package/version collision: {path.name}")
         seen.add(name)
+        if name not in planned or (version, arch) != (planned[name].version, planned[name].architecture):
+            raise ValueError(f'Downloaded package differs from the resolved inventory: {path.name}')
         available = [v for v in cache[name].versions if v.version == version and v.architecture == arch]
         if not available:
             raise ValueError(f"Downloaded package absent from authenticated indexes: {path.name}")
@@ -128,11 +161,13 @@ def main():
             raise ValueError(f"Downloaded package hash/size differs from authenticated Ubuntu index: {path.name}")
         packages.append({"name": name, "version": version, "architecture": arch, "filename": path.name,
                          "size_bytes": path.stat().st_size, "sha256": checksum,
+                         "source_name": expected.source_name, "source_version": expected.source_version,
+                         "inclusion_reasons": reasons[name],
                          "provides": expected.record.get("Provides", ""),
                          "depends": expected.record.get("Depends", ""),
                          "pre_depends": expected.record.get("Pre-Depends", "")})
-    if not packages:
-        raise ValueError("APT downloaded no packages")
+    if seen != set(planned):
+        raise ValueError('Downloaded inventory does not contain every resolved package')
     shutil.rmtree(repo / "partial")
     (repo / "lock").unlink(missing_ok=True)
     with (repo / "Packages").open("wb") as output:
@@ -151,6 +186,9 @@ def main():
         raise ValueError("Expected authenticated release metadata for noble, noble-updates, and noble-security")
     manifest = {"schema_version": 1, "requested": names, "architecture": "amd64", "ubuntu_release": "24.04",
                 "with_recommends": request["with_recommends"], "selections": selections, "packages": packages,
+                "compatibility": {"strategy": "same-source-exact-dependencies-v1",
+                                  "package_count": len(resolved) - len(initial),
+                                  "size_bytes": compatibility_bytes},
                 "repositories": {"suites": ["noble", "noble-updates", "noble-security"],
                                  "components": ["main", "restricted", "universe", "multiverse"],
                                  "release_metadata": metadata}}

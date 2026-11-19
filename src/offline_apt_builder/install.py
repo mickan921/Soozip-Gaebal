@@ -16,6 +16,13 @@ from .repository import sha256, verify_repository
 
 def verify_bundle(bundle: Path) -> dict:
     actual = inventory(bundle)
+    if (bundle / 'manifest.json').is_file():
+        metadata = json.loads((bundle / 'manifest.json').read_text())
+        if metadata.get('bundle_type', 'apt') not in {'apt', 'pip'}:
+            raise BuildError('Unsupported bundle type.')
+        if metadata.get('bundle_type') == 'pip':
+            from .pip_install import verify_pip_bundle
+            return verify_pip_bundle(bundle)
     sums = bundle / 'SHA256SUMS'
     if not sums.is_file():
         raise BuildError('Missing bundle checksums.')
@@ -52,6 +59,42 @@ def verify_bundle(bundle: Path) -> dict:
     return manifest
 
 
+def removal_diagnostics(output: str) -> dict | None:
+    """Read the complete C-locale APT output before the error tail is truncated."""
+    removed = []
+    in_list = False
+    for line in output.splitlines():
+        if line.strip() == 'The following packages will be REMOVED:':
+            in_list = True
+            continue
+        if in_list:
+            if line.startswith('  '):
+                for name in line.split():
+                    if re.fullmatch(r'[a-z0-9][a-z0-9+.-]*(?::[a-z0-9-]+)?', name):
+                        removed.append(name)
+                continue
+            in_list = False
+        if line.startswith('Remv '):
+            name = line.split()[1]
+            if re.fullmatch(r'[a-z0-9][a-z0-9+.-]*(?::[a-z0-9-]+)?', name):
+                removed.append(name)
+    removed = list(dict.fromkeys(removed))
+    if removed or 'Packages need to be removed but remove is disabled' in output:
+        return {'category': 'removal-required', 'removed_packages': removed}
+    return None
+
+
+def removal_summary(diagnostics: dict) -> str:
+    names = diagnostics['removed_packages']
+    if not names:
+        return 'Installation blocked: APT requires package removals. No packages were changed. Review Details and rebuild a compatible bundle.'
+    sample = ', '.join(names[:10])
+    if len(names) > 10:
+        sample += f', and {len(names) - 10} more'
+    return (f'Installation blocked: APT would remove {len(names)} installed package(s): {sample}. '
+            'No packages were changed. Rebuild a compatible bundle; see Details for the complete list.')
+
+
 def run_installer(bundle: Path, arguments: list[str], emit) -> str:
     # Never inherit caller APT, Bash startup, or dynamic-library configuration.
     env = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'HOME': '/root' if os.geteuid() == 0 else str(Path.home())}
@@ -81,6 +124,12 @@ def run_installer(bundle: Path, arguments: list[str], emit) -> str:
         process.stdout.close()
     if code:
         details = ''.join(output)
+        # Only the non-mutating preview may promise that nothing was changed.
+        diagnostics = removal_diagnostics(details) if '--preview' in arguments else None
+        if diagnostics:
+            listing = '\n'.join(diagnostics['removed_packages'])
+            raise BuildError(removal_summary(diagnostics) + '\nPackages APT proposed removing:\n' + listing
+                             + '\nAPT details:\n' + details[-3000:], diagnostics=diagnostics)
         errors = [line.removeprefix('ERROR: ').strip() for line in details.splitlines() if line.startswith('ERROR: ')]
         if 'Could not get lock' in details or 'Unable to acquire' in details:
             summary = 'Another package manager is busy. Wait for it to finish, then reopen the bundle and retry.'

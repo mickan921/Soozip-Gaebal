@@ -189,6 +189,32 @@ find /etc/apt -type f -exec sha256sum {} + | sort > /tmp/before-config
         self.install(bundle="removal", setup="dpkg -i /fixtures/pool/offline-test-existing_1_all.deb", expected=1,
                      after="dpkg-query -W -f='${db:Status-Status}' offline-test-existing | grep -qx installed")
 
+    def test_companions_preserve_existing_service_and_desktop(self):
+        setup = ('dpkg -i /fixtures/pool/offline-sync-runtime_1_all.deb '
+                 '/fixtures/pool/offline-sync-daemon_1_all.deb /fixtures/pool/offline-sync-desktop_1_all.deb; '
+                 'sha256sum /var/lib/dpkg/status > /tmp/before')
+        self.install(bundle='sync-incomplete', setup=setup, expected=1,
+                     after='sha256sum --check /tmp/before')
+        output = self.install(bundle='sync-complete', setup=setup, after='''
+test "$(dpkg-query -W -f='${Version}' offline-sync-runtime)" = 2
+test "$(dpkg-query -W -f='${Version}' offline-sync-daemon)" = 2
+test "$(dpkg-query -W -f='${db:Status-Status}' offline-sync-desktop)" = installed
+assert_package_absent offline-sync-alternate
+assert_package_absent offline-sync-plugin
+apt-get check
+sha256sum /var/lib/dpkg/status > /tmp/installed
+bash '/bundle with spaces #/install.sh' --yes
+sha256sum --check /tmp/installed
+''')
+        self.assertNotIn('Remv ', output)
+
+    def test_held_companion_blocks_without_changing_the_desktop(self):
+        self.install(bundle='sync-complete', expected=1, setup='''
+dpkg -i /fixtures/pool/offline-sync-runtime_1_all.deb /fixtures/pool/offline-sync-daemon_1_all.deb /fixtures/pool/offline-sync-desktop_1_all.deb
+apt-mark hold offline-sync-daemon
+sha256sum /var/lib/dpkg/status > /tmp/before
+''', after='sha256sum --check /tmp/before')
+
     def test_wrong_platform_and_missing_dependencies_fail(self):
         self.install(bundle="wrong-arch", expected=1)
         self.install(setup="sed -i 's/VERSION_ID=\"24.04\"/VERSION_ID=\"22.04\"/' /etc/os-release", expected=1)

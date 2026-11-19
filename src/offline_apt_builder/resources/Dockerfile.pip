@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+# The pinned runtime is used only inside builder/validator containers.
+COPY python.tar.gz /tmp/python.tar.gz
+RUN mkdir /opt/pip-python && tar -xzf /tmp/python.tar.gz -C /opt/pip-python --strip-components=1 && rm /tmp/python.tar.gz
+ENV PATH="/opt/pip-python/bin:${PATH}"
+ENV PYTHONDONTWRITEBYTECODE=1
+ENTRYPOINT ["/opt/pip-python/bin/python3", "-I", "-B"]

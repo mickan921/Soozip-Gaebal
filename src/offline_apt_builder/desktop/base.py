@@ -100,6 +100,7 @@ class BaseWindow(QMainWindow):
         self.setWindowTitle(title)
         self.resize(860, 700)
         self.busy = False
+        self.operation = None
         self.installing = False
         self.had_error = False
         self.succeeded = False
@@ -119,6 +120,7 @@ class BaseWindow(QMainWindow):
         self.layout.addWidget(heading)
         self.status = QLabel('Ready')
         self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
         self.status.setWordWrap(True)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
@@ -141,13 +143,14 @@ class BaseWindow(QMainWindow):
         if self.busy:
             return
         self.busy = True
+        self.operation = operation
         self.had_error = False
         self.succeeded = False
-        self.installing = privileged
+        self.installing = operation == 'install' or privileged
         self.logs.clear()
         self.status.setText('Waiting for administrator authentication…' if privileged else 'Starting…')
         self.progress.setRange(0, 0)
-        self.cancel.setEnabled(not privileged)
+        self.cancel.setEnabled(not self.installing)
         for widget in self.inputs:
             widget.setEnabled(False)
         try:
